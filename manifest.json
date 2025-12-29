@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Stream Video Saver",
+  "version": "1.0.0",
+  "description": "Captures and saves HLS stream m3u8 files and segments",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "downloads",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["utils/*", "ffmpeg-core/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
+
