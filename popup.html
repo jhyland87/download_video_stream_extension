@@ -91,22 +91,61 @@
     .error.show {
       display: block;
     }
+    .manifest-item {
+      padding: 10px;
+      background: #e3f2fd;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      border: 1px solid #90caf9;
+    }
+    .manifest-item-header {
+      font-weight: bold;
+      margin-bottom: 5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .manifest-item-name {
+      font-family: monospace;
+      font-size: 12px;
+      word-break: break-all;
+      margin-bottom: 5px;
+    }
+    .manifest-item-info {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .manifest-item-actions {
+      display: flex;
+      gap: 5px;
+    }
+    .manifest-item-actions button {
+      flex: 1;
+      padding: 6px;
+      font-size: 11px;
+      margin: 0;
+    }
+    .manifest-item-actions .btn-small {
+      padding: 4px 8px;
+      font-size: 10px;
+    }
+    .clear-all-btn {
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
   <h1>Stream Video Saver</h1>
 
-  <div id="status" class="status">Monitoring for video streams...</div>
-
-  <div id="manifestInfo" style="display: none; padding: 10px; background: #e3f2fd; border-radius: 4px; margin-bottom: 15px;">
-    <div style="font-weight: bold; margin-bottom: 5px;">Manifest Found:</div>
-    <div id="manifestName" style="font-family: monospace; font-size: 12px; word-break: break-all; margin-bottom: 10px;"></div>
-    <div id="segmentCount" style="font-size: 12px; color: #666; margin-bottom: 10px;"></div>
+  <div id="status" class="status">Loading extension...</div>
+  <div id="debugInfo" style="font-size: 10px; color: #999; padding: 5px; background: #f5f5f5; margin-bottom: 10px; display: block;">
+    Debug: Script not loaded yet - if you see this, script failed to load
   </div>
 
-  <button id="downloadZipBtn" class="button primary" disabled>Download as ZIP</button>
-  <button id="downloadMp4Btn" class="button primary" disabled>Download as MP4</button>
-  <button id="clearBtn" class="button secondary" disabled>Clear Manifest</button>
+  <div id="manifestHistory" style="max-height: 400px; overflow-y: auto; margin-bottom: 15px;"></div>
+
+  <button id="clearAllBtn" class="button secondary clear-all-btn" style="display: none;">Clear All Manifests</button>
 
   <div id="progress" class="progress">
     <div class="progress-bar">
