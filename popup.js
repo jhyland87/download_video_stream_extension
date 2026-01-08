@@ -1,4 +1,12 @@
-// Popup script for UI interaction
+/**
+ * @fileoverview Popup script for UI interaction and user interface management.
+ * This script handles:
+ * - Rendering manifest history
+ * - Initiating downloads (ZIP and MP4)
+ * - Displaying download progress
+ * - Managing user interactions (clear, cancel, download)
+ * - Communicating with background script
+ */
 
 // CRITICAL: This should appear in console immediately when script loads
 console.log('[Stream Video Saver] popup.js loaded - script is executing');
@@ -41,8 +49,17 @@ try {
   console.error('[Stream Video Saver] Error updating status:', error);
 }
 
+/**
+ * Interval ID for periodic status updates.
+ * @type {number|null}
+ */
 let statusInterval = null;
 
+/**
+ * Initializes the popup when DOM is ready.
+ * Sets up event listeners, renders manifest history, and checks for ongoing downloads.
+ * @listens DOMContentLoaded
+ */
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[Stream Video Saver] DOMContentLoaded fired');
 
@@ -67,6 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressFill = document.getElementById('progressFill');
   const progressInfo = document.getElementById('progressInfo');
   const errorDiv = document.getElementById('error');
+  const cancelDownloadBtn = document.getElementById('cancelDownloadBtn');
 
   console.log('[Stream Video Saver] DOM elements found:', {
     statusDiv: !!statusDiv,
@@ -90,6 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let selectedManifestId = null;
   let eventListenerAttached = false;
+  let activeDownloadId = null; // Track active download ID
 
   // Attach event listeners using event delegation (only once)
   if (!eventListenerAttached) {
@@ -108,7 +127,24 @@ document.addEventListener('DOMContentLoaded', () => {
     eventListenerAttached = true;
   }
 
-  // Render manifest history list
+  // Cancel button click handler
+  if (cancelDownloadBtn) {
+    cancelDownloadBtn.addEventListener('click', () => {
+      cancelDownload();
+    });
+  }
+
+  /**
+   * Renders the list of captured manifests in the UI.
+   * Displays manifest information including filename, segment count, and capture time.
+   * Shows empty state if no manifests are available.
+   * @param {Array<Object>} manifests - Array of manifest objects to display
+   * @param {string} manifests[].id - Unique manifest identifier
+   * @param {string} manifests[].fileName - Name of the m3u8 file
+   * @param {number} manifests[].segmentCount - Number of segments in the manifest
+   * @param {string} manifests[].capturedAt - ISO timestamp when manifest was captured
+   * @returns {void}
+   */
   function renderManifestHistory(manifests) {
     console.log(`[Stream Video Saver] renderManifestHistory called with ${manifests?.length ?? 0} manifests`);
 
@@ -156,7 +192,11 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log(`[Stream Video Saver] Rendered ${manifests.length} manifest items`);
   }
 
-  // Update status periodically
+  /**
+   * Updates the manifest status by requesting current state from background script.
+   * Fetches manifest history and re-renders the UI.
+   * @returns {void}
+   */
   function updateStatus() {
     console.log('[Stream Video Saver] updateStatus() called - sending getStatus message');
 
@@ -188,7 +228,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Download a specific manifest
+  /**
+   * Initiates download of a specific manifest in the requested format.
+   * For ZIP format: sends request to background script for background download.
+   * For MP4 format: downloads and converts in popup (due to SharedArrayBuffer limitations).
+   * @param {string} manifestId - The ID of the manifest to download
+   * @param {string} format - The download format ('zip' or 'mp4')
+   * @returns {Promise<void>}
+   */
   async function downloadManifest(manifestId, format) {
     // Prevent double-clicks
     if (selectedManifestId === manifestId && progressDiv.classList.contains('active')) {
@@ -202,28 +249,51 @@ document.addEventListener('DOMContentLoaded', () => {
     progressFill.style.width = '0%';
     progressFill.textContent = '0%';
     progressInfo.textContent = 'Starting download...';
+    if (cancelDownloadBtn) {
+      cancelDownloadBtn.style.display = 'block';
+    }
 
     try {
-      // Get manifest data from background
-      const data = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: 'getManifestData', manifestId: manifestId }, (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (response.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response);
-          }
-        });
-      });
-
-      if (!data.m3u8Url || !data.m3u8Content) {
-        throw new Error('Manifest data not available');
-      }
-
       if (format === 'zip') {
-        await downloadAsZip(data);
+        // Send download request to background script
+        chrome.runtime.sendMessage({
+          action: 'startDownload',
+          manifestId: manifestId,
+          format: 'zip'
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            showError(chrome.runtime.lastError.message);
+            progressDiv.classList.remove('active');
+            if (cancelDownloadBtn) {
+              cancelDownloadBtn.style.display = 'none';
+            }
+          } else if (response && response.error) {
+            showError(response.error);
+            progressDiv.classList.remove('active');
+            if (cancelDownloadBtn) {
+              cancelDownloadBtn.style.display = 'none';
+            }
+          }
+          // Download will continue in background, progress updates will come via messages
+        });
       } else if (format === 'mp4') {
+        // MP4 still needs to be done in popup due to SharedArrayBuffer limitations
+        const data = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ action: 'getManifestData', manifestId: manifestId }, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (response.error) {
+              reject(new Error(response.error));
+            } else {
+              resolve(response);
+            }
+          });
+        });
+
+        if (!data.m3u8Url || !data.m3u8Content) {
+          throw new Error('Manifest data not available');
+        }
+
         await downloadAsMp4(data);
       }
     } catch (error) {
@@ -233,7 +303,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // Clear a specific manifest
+  /**
+   * Cancels the currently active download.
+   * Sends cancel request to background script and updates UI.
+   * @returns {void}
+   */
+  function cancelDownload() {
+    if (activeDownloadId) {
+      chrome.runtime.sendMessage({
+        action: 'cancelDownload',
+        downloadId: activeDownloadId
+      }, () => {
+        activeDownloadId = null;
+        progressDiv.classList.remove('active');
+        progressInfo.textContent = 'Download cancelled';
+        if (cancelDownloadBtn) {
+          cancelDownloadBtn.style.display = 'none';
+        }
+      });
+    }
+  }
+
+  /**
+   * Clears a specific manifest from the history.
+   * Sends clear request to background script and refreshes the UI.
+   * @param {string} manifestId - The ID of the manifest to clear
+   * @returns {void}
+   */
   function clearManifest(manifestId) {
     chrome.runtime.sendMessage({ action: 'clearManifest', manifestId: manifestId }, (response) => {
       if (chrome.runtime.lastError) {
@@ -259,110 +355,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Download as ZIP function
-  async function downloadAsZip(data) {
-    // Wait for JSZip to be available (with retry)
-    let retries = 10;
-    while (typeof JSZip === 'undefined' && retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      retries--;
-    }
-
-    if (typeof JSZip === 'undefined') {
-      throw new Error('JSZip library not loaded. Please reload the extension.');
-    }
-
-    const zip = new JSZip();
-
-    // Modify m3u8 content to use local filenames
-    const modifiedM3U8Content = modifyM3U8ForLocalFiles(data.m3u8Content, data.m3u8Url);
-
-    // Add m3u8 file
-    const m3u8FileName = data.m3u8Url.substring(data.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
-    zip.file(m3u8FileName, modifiedM3U8Content);
-
-    // Parse m3u8 to get segment URLs
-    const segmentUrls = parseM3U8(data.m3u8Content, data.m3u8Url);
-
-    let downloaded = 0;
-    const total = segmentUrls.length;
-
-    if (total === 0) {
-      throw new Error('No segments found in m3u8 file');
-    }
-
-    // Download segments in batches
-    const batchSize = 5;
-    for (let i = 0; i < segmentUrls.length; i += batchSize) {
-      const batch = segmentUrls.slice(i, i + batchSize);
-
-      await Promise.all(batch.map(async (url) => {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-          const blob = await response.blob();
-
-          // Extract filename
-          let fileName;
-          try {
-            if (url.startsWith('http://') || url.startsWith('https://')) {
-              const urlObj = new URL(url);
-              const pathParts = urlObj.pathname.split('/');
-              fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2];
-            } else {
-              fileName = url.split('?')[0].split('/').pop();
-            }
-            fileName = fileName.split('?')[0];
-          } catch (error) {
-            fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0];
-          }
-
-          if (!fileName) {
-            throw new Error('Could not extract filename from URL');
-          }
-
-          zip.file(fileName, blob);
-          downloaded++;
-
-          // Update progress
-          const percent = Math.round((downloaded / total) * 100);
-          progressFill.style.width = percent + '%';
-          progressFill.textContent = `${percent}%`;
-          progressInfo.textContent = `Downloaded ${downloaded} of ${total} segments`;
-        } catch (error) {
-          console.error(`[Stream Video Saver] Error downloading segment ${url}:`, error);
-        }
-      }));
-    }
-
-    // Generate zip file
-    progressInfo.textContent = 'Creating ZIP file...';
-    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-
-    // Create download
-    const url = URL.createObjectURL(zipBlob);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const zipFileName = `${data.m3u8FileName.replace('.m3u8', '')}-${timestamp}.zip`;
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = zipFileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    // Clean up
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    progressInfo.textContent = 'Download complete!';
-    setTimeout(() => {
-      progressDiv.classList.remove('active');
-    }, 2000);
-  }
-
-  // Download as MP4 function
+  /**
+   * Downloads video segments and converts them to MP4 using FFmpeg.wasm.
+   * Must run in popup context due to SharedArrayBuffer requirements.
+   * Downloads segments, writes to FFmpeg filesystem, concatenates, and converts to MP4.
+   * @param {Object} data - Manifest data object
+   * @param {string} data.m3u8Url - URL of the m3u8 file
+   * @param {string} data.m3u8Content - Content of the m3u8 file
+   * @param {string} data.m3u8FileName - Filename of the m3u8 file
+   * @returns {Promise<void>}
+   * @throws {Error} If SharedArrayBuffer is unavailable, FFmpeg fails to load, or conversion fails
+   */
   async function downloadAsMp4(data) {
     // Check for SharedArrayBuffer support first
     if (typeof SharedArrayBuffer === 'undefined') {
@@ -552,14 +555,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000);
   }
 
-  // Listen for messages from background
+  /**
+   * Message listener for receiving updates from background script.
+   * Handles download progress updates, download errors, and manifest capture notifications.
+   * @param {Object} message - Message object from background script
+   * @param {string} message.action - Action type ('downloadProgress' | 'downloadError' | 'manifestCaptured')
+   * @returns {void}
+   */
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'downloadProgress') {
+      activeDownloadId = message.downloadId;
       const percent = Math.round((message.downloaded / message.total) * 100);
       progressFill.style.width = percent + '%';
       progressFill.textContent = `${percent}%`;
-      progressInfo.textContent = `Downloaded ${message.downloaded} of ${message.total} segments`;
+
+      if (message.status === 'creating_zip') {
+        progressInfo.textContent = 'Creating ZIP file...';
+      } else if (message.status === 'complete') {
+        progressInfo.textContent = 'Download complete!';
+        setTimeout(() => {
+          progressDiv.classList.remove('active');
+          activeDownloadId = null;
+        }, 2000);
+      } else if (message.status === 'cancelled') {
+        progressInfo.textContent = 'Download cancelled';
+        setTimeout(() => {
+          progressDiv.classList.remove('active');
+          activeDownloadId = null;
+        }, 2000);
+      } else {
+        progressInfo.textContent = `Downloaded ${message.downloaded} of ${message.total} segments`;
+      }
       progressDiv.classList.add('active');
+      // Show cancel button when download is active
+      if (cancelDownloadBtn && message.status !== 'complete' && message.status !== 'cancelled') {
+        cancelDownloadBtn.style.display = 'block';
+      } else if (cancelDownloadBtn) {
+        cancelDownloadBtn.style.display = 'none';
+      }
+    } else if (message.action === 'downloadError') {
+      showError(message.error || 'Download failed');
+      progressDiv.classList.remove('active');
+      activeDownloadId = null;
     } else if (message.action === 'manifestCaptured') {
       // New manifest detected
       console.log(`[Stream Video Saver] Manifest captured: ${message.fileName}`);
@@ -569,171 +606,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Old event listeners removed - downloads are now handled by downloadManifest() function
 
+  /**
+   * Displays an error message in the UI.
+   * @param {string} message - The error message to display
+   * @returns {void}
+   */
   function showError(message) {
     errorDiv.textContent = 'Error: ' + message;
     errorDiv.classList.add('show');
   }
 
-  function modifyM3U8ForLocalFiles(content, baseUrl) {
-    console.log('[Stream Video Saver] Modifying m3u8 to use local filenames');
-    const lines = content.split('\n');
-    const modifiedLines = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmedLine = line.trim();
-
-      // Keep comments and empty lines as-is
-      if (!trimmedLine || trimmedLine.startsWith('#')) {
-        modifiedLines.push(line);
-        continue;
-      }
-
-      // This is a segment URL line - extract just the filename
-      try {
-        let filename;
-
-        // If it's a full URL, parse it
-        if (trimmedLine.startsWith('http://') || trimmedLine.startsWith('https://')) {
-          const url = new URL(trimmedLine);
-          // Get just the filename from the pathname
-          const pathParts = url.pathname.split('/');
-          filename = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2];
-        } else if (trimmedLine.startsWith('/')) {
-          // Absolute path - extract filename
-          const pathParts = trimmedLine.split('/');
-          filename = pathParts[pathParts.length - 1];
-        } else {
-          // Relative path - extract filename (may include query params)
-          // Remove query parameters if present
-          filename = trimmedLine.split('?')[0].split('/').pop();
-        }
-
-        // Ensure we have a filename
-        if (!filename) {
-          console.warn(`[Stream Video Saver] Could not extract filename from: ${trimmedLine}`);
-          modifiedLines.push(line); // Keep original if we can't parse it
-          continue;
-        }
-
-        // Remove any remaining query parameters from filename
-        filename = filename.split('?')[0];
-
-        console.log(`[Stream Video Saver] Replacing: ${trimmedLine} -> ${filename}`);
-        modifiedLines.push(filename);
-      } catch (error) {
-        console.error(`[Stream Video Saver] Error processing line ${trimmedLine}:`, error);
-        modifiedLines.push(line); // Keep original on error
-      }
-    }
-
-    const modifiedContent = modifiedLines.join('\n');
-    console.log(`[Stream Video Saver] Modified m3u8 content length: ${modifiedContent.length} chars`);
-    return modifiedContent;
-  }
-
-  function parseM3U8(content, baseUrl) {
-    console.log(`[Stream Video Saver] Parsing m3u8 in popup, baseUrl: ${baseUrl}`);
-    const lines = content.split('\n');
-    const segmentUrls = [];
-
-    if (!baseUrl) {
-      console.warn('[Stream Video Saver] No baseUrl provided');
-      return segmentUrls;
-    }
-
-    const base = new URL(baseUrl);
-    const basePath = base.pathname.substring(0, base.pathname.lastIndexOf('/') + 1);
-    console.log(`[Stream Video Saver] Base origin: ${base.origin}, Base path: ${basePath}`);
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-
-      // Skip empty lines and comments
-      if (!line || line.startsWith('#')) {
-        continue;
-      }
-
-      // This is a URL line (any non-comment, non-empty line)
-      // This works for any segment naming convention
-      if (line && !line.startsWith('#')) {
-        let segmentUrl;
-
-        // Handle relative URLs
-        if (line.startsWith('http://') || line.startsWith('https://')) {
-          segmentUrl = line;
-        } else if (line.startsWith('/')) {
-          segmentUrl = base.origin + line;
-        } else {
-          segmentUrl = base.origin + basePath + line;
-        }
-
-        segmentUrls.push(segmentUrl);
-      }
-    }
-
-    console.log(`[Stream Video Saver] Parsed ${segmentUrls.length} segment URLs`);
-    return segmentUrls;
-  }
-
-  function modifyM3U8ForLocalFiles(content, baseUrl) {
-    console.log('[Stream Video Saver] Modifying m3u8 to use local filenames');
-    const lines = content.split('\n');
-    const modifiedLines = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmedLine = line.trim();
-
-      // Keep comments and empty lines as-is
-      if (!trimmedLine || trimmedLine.startsWith('#')) {
-        modifiedLines.push(line);
-        continue;
-      }
-
-      // This is a segment URL line - extract just the filename
-      try {
-        let filename;
-
-        // If it's a full URL, parse it
-        if (trimmedLine.startsWith('http://') || trimmedLine.startsWith('https://')) {
-          const url = new URL(trimmedLine);
-          // Get just the filename from the pathname
-          const pathParts = url.pathname.split('/');
-          filename = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2];
-        } else if (trimmedLine.startsWith('/')) {
-          // Absolute path - extract filename
-          const pathParts = trimmedLine.split('/');
-          filename = pathParts[pathParts.length - 1];
-        } else {
-          // Relative path - extract filename (may include query params)
-          // Remove query parameters if present
-          filename = trimmedLine.split('?')[0].split('/').pop();
-        }
-
-        // Ensure we have a filename
-        if (!filename) {
-          console.warn(`[Stream Video Saver] Could not extract filename from: ${trimmedLine}`);
-          modifiedLines.push(line); // Keep original if we can't parse it
-          continue;
-        }
-
-        // Remove any remaining query parameters from filename
-        filename = filename.split('?')[0];
-
-        console.log(`[Stream Video Saver] Replacing: ${trimmedLine} -> ${filename}`);
-        modifiedLines.push(filename);
-      } catch (error) {
-        console.error(`[Stream Video Saver] Error processing line ${trimmedLine}:`, error);
-        modifiedLines.push(line); // Keep original on error
-      }
-    }
-
-    const modifiedContent = modifiedLines.join('\n');
-    console.log(`[Stream Video Saver] Modified m3u8 content length: ${modifiedContent.length} chars`);
-    return modifiedContent;
-  }
-
+  /**
+   * Parses an m3u8 playlist file and extracts segment URLs.
+   * Handles absolute URLs, relative URLs, and URLs with query parameters.
+   * Used by downloadAsMp4 function.
+   * @param {string} content - The m3u8 file content as a string
+   * @param {string} baseUrl - The base URL of the m3u8 file (used for resolving relative URLs)
+   * @returns {Array<string>} Array of absolute segment URLs
+   */
   function parseM3U8(content, baseUrl) {
     console.log(`[Stream Video Saver] Parsing m3u8 in popup, baseUrl: ${baseUrl}`);
     const lines = content.split('\n');
@@ -823,6 +713,26 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (statusDiv) {
         statusDiv.textContent = 'No manifests found';
+      }
+    }
+  });
+
+  // Check for ongoing downloads when popup opens
+  chrome.runtime.sendMessage({ action: 'getDownloadStatus' }, (response) => {
+    if (response && response.downloads && response.downloads.length > 0) {
+      const download = response.downloads[0]; // Show first active download
+      activeDownloadId = download.downloadId;
+      progressDiv.classList.add('active');
+      const percent = Math.round((download.progress.downloaded / download.progress.total) * 100);
+      progressFill.style.width = percent + '%';
+      progressFill.textContent = `${percent}%`;
+      if (download.progress.status === 'creating_zip') {
+        progressInfo.textContent = 'Creating ZIP file...';
+      } else {
+        progressInfo.textContent = `Downloaded ${download.progress.downloaded} of ${download.progress.total} segments`;
+      }
+      if (cancelDownloadBtn && download.progress.status !== 'complete' && download.progress.status !== 'cancelled') {
+        cancelDownloadBtn.style.display = 'block';
       }
     }
   });
