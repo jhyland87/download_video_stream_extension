@@ -464,7 +464,7 @@ fi
 
 echo "Conversion complete: $OUTPUT_FILE"
 echo "Cleaning up segments..."
-rm -f *.ts
+rm -f *.ts *.m4s
 `;
   zip.file('convert_to_mp4.sh', bashScriptContent);
 
