@@ -3,6 +3,14 @@
  */
 
 /**
+ * Video resolution information
+ */
+export interface VideoResolution {
+  width: number;
+  height: number;
+}
+
+/**
  * Manifest object stored in history
  */
 export interface Manifest {
@@ -13,6 +21,8 @@ export interface Manifest {
   title?: string; // Video title or page title
   expectedSegments: string[];
   capturedAt: string;
+  resolution?: VideoResolution; // Video resolution (width x height)
+  duration?: number; // Video duration in seconds
 }
 
 /**
@@ -25,6 +35,8 @@ export interface ManifestSummary {
   url: string;
   segmentCount: number;
   capturedAt: string;
+  resolution?: VideoResolution; // Video resolution (width x height)
+  duration?: number; // Video duration in seconds
 }
 
 /**

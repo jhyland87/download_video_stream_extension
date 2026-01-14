@@ -72,6 +72,8 @@ chrome.runtime.onMessage.addListener((
         url: m.m3u8Url,
         segmentCount: m.expectedSegments.length,
         capturedAt: m.capturedAt,
+        resolution: m.resolution,
+        duration: m.duration,
         urlKey: m.m3u8Url.split('?')[0] // URL without query params for deduplication
       }))
       .filter((m) => {
@@ -93,7 +95,9 @@ chrome.runtime.onMessage.addListener((
         title: m.title,
         url: m.url,
         segmentCount: m.segmentCount,
-        capturedAt: m.capturedAt
+        capturedAt: m.capturedAt,
+        resolution: m.resolution,
+        duration: m.duration
       }))
       // Sort by capturedAt in descending order (most recent first)
       .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
@@ -228,6 +232,66 @@ function parseM3U8(content: string, baseUrl: string): string[] {
 
   console.log(`[Stream Video Saver] Total segments/manifests parsed: ${segmentUrls.length}`);
   return segmentUrls;
+}
+
+/**
+ * Parses an m3u8 playlist file and extracts video resolution from #EXT-X-STREAM-INF tags.
+ * @param content - The m3u8 file content as a string
+ * @returns Video resolution if found, undefined otherwise
+ */
+function parseResolution(content: string): { width: number; height: number } | undefined {
+  const lines = content.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Look for #EXT-X-STREAM-INF tag with RESOLUTION attribute
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      // Format: #EXT-X-STREAM-INF:RESOLUTION=1920x1080,...
+      const resolutionMatch = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+      if (resolutionMatch && resolutionMatch[1] && resolutionMatch[2]) {
+        const width = parseInt(resolutionMatch[1], 10);
+        const height = parseInt(resolutionMatch[2], 10);
+        if (!isNaN(width) && !isNaN(height) && width > 0 && height > 0) {
+          return { width, height };
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Parses an m3u8 playlist file and calculates total video duration by summing #EXTINF durations.
+ * @param content - The m3u8 file content as a string
+ * @returns Total duration in seconds if calculable, undefined otherwise
+ */
+function parseDuration(content: string): number | undefined {
+  const lines = content.split('\n');
+  let totalDuration = 0;
+  let hasExtInf = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Look for #EXTINF tag
+    // Format: #EXTINF:duration, or #EXTINF:duration,optional-title
+    if (line.startsWith('#EXTINF:')) {
+      hasExtInf = true;
+      // Extract duration value (first number after the colon, before comma or end of line)
+      const durationMatch = line.match(/^#EXTINF:([\d.]+)/);
+      if (durationMatch && durationMatch[1]) {
+        const duration = parseFloat(durationMatch[1]);
+        if (!isNaN(duration) && duration > 0) {
+          totalDuration += duration;
+        }
+      }
+    }
+  }
+
+  // Only return duration if we found at least one #EXTINF tag
+  return hasExtInf && totalDuration > 0 ? totalDuration : undefined;
 }
 
 /**
@@ -369,6 +433,19 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
       return;
     }
 
+    // Parse resolution and duration from manifest
+    const resolution = parseResolution(text);
+    const duration = parseDuration(text);
+
+    if (resolution) {
+      console.log(`[Stream Video Saver] Found resolution: ${resolution.width}x${resolution.height}`);
+    }
+    if (duration) {
+      const minutes = Math.floor(duration / 60);
+      const seconds = Math.floor(duration % 60);
+      console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
+    }
+
     // Double-check we don't already have this (race condition protection)
     const duplicateCheck = manifestHistory.find((m) => {
       const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
@@ -420,7 +497,9 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
       m3u8FileName: fileName,
       title: title,
       expectedSegments: segmentUrls,
-      capturedAt: new Date().toISOString()
+      capturedAt: new Date().toISOString(),
+      resolution: resolution,
+      duration: duration
     };
 
     manifestHistory.push(manifest);
@@ -565,9 +644,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Create and add bash script for converting to MP4
   const scriptTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  
+
   // Use title if available, otherwise fall back to m3u8 filename
-  const videoBaseName = manifest.title 
+  const videoBaseName = manifest.title
     ? sanitizeFilename(manifest.title)
     : (m3u8FileName.replace('.m3u8', '') || 'output');
   const outputFileName = `${videoBaseName}-${scriptTimestamp}.mp4`;
@@ -584,7 +663,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   bashScriptContent = bashScriptContent
     .replace('{{MANIFEST_FILE}}', m3u8FileName)
     .replace('{{OUTPUT_FILE}}', outputFileName);
-  
+
   zip.file('compile_video.sh', bashScriptContent);
 
   // Parse m3u8 to get segment URLs
@@ -764,17 +843,17 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   const chunkSize = 8192; // Process in 8KB chunks
   const totalChunks = Math.ceil(bytes.length / chunkSize);
   let processedChunks = 0;
-  
+
   for (let i = 0; i < bytes.length; i += chunkSize) {
     // Check for cancellation periodically during conversion
     if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
       throw new Error('Download cancelled');
     }
-    
+
     const chunk = bytes.subarray(i, i + chunkSize);
     binary += String.fromCharCode.apply(null, Array.from(chunk));
     processedChunks++;
-    
+
     // Update progress periodically during base64 conversion (every 10% or every 100 chunks)
     if (processedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0 || processedChunks === totalChunks) {
       notifyDownloadProgress(downloadId, {

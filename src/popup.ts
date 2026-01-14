@@ -192,15 +192,40 @@ document.addEventListener('DOMContentLoaded', () => {
       // Use title if available, otherwise fall back to fileName
       const displayTitle = manifest.title || manifest.fileName;
 
+      // Format resolution and duration for display
+      let infoParts: string[] = [];
+
+      if (manifest.resolution) {
+        infoParts.push(`${manifest.resolution.width}×${manifest.resolution.height}`);
+      }
+
+      if (manifest.duration) {
+        const hours = Math.floor(manifest.duration / 3600);
+        const minutes = Math.floor((manifest.duration % 3600) / 60);
+        const seconds = Math.floor(manifest.duration % 60);
+
+        let durationStr = '';
+        if (hours > 0) {
+          durationStr = `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        } else {
+          durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+        infoParts.push(durationStr);
+      }
+
+      infoParts.push(`${manifest.segmentCount} segments`);
+      infoParts.push(`Captured at ${escapeHtml(timeStr)}`);
+
+      const infoText = infoParts.join(' • ');
+
       return `
         <div class="manifest-item" data-manifest-id="${escapeHtml(manifest.id)}">
           <div class="manifest-item-header">
             <span>${escapeHtml(displayTitle)}</span>
             <button class="btn-small secondary btn-clear-manifest" data-manifest-id="${escapeHtml(manifest.id)}" style="padding: 2px 6px; font-size: 10px;">×</button>
           </div>
-          <div class="manifest-item-name">${escapeHtml(displayTitle)}</div>
           <div class="manifest-item-info">
-            ${manifest.segmentCount} segments • Captured at ${escapeHtml(timeStr)}
+            ${infoText}
           </div>
           <div class="manifest-item-actions">
             <button class="button primary btn-download-zip" data-manifest-id="${escapeHtml(manifest.id)}" style="font-size: 11px; padding: 6px;">Download ZIP</button>

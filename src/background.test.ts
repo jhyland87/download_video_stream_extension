@@ -208,3 +208,177 @@ describe('Download format validation', () => {
   });
 });
 
+/**
+ * Testable version of parseResolution
+ */
+function parseResolution(content: string): { width: number; height: number } | undefined {
+  const lines = content.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Look for #EXT-X-STREAM-INF tag with RESOLUTION attribute
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      // Format: #EXT-X-STREAM-INF:RESOLUTION=1920x1080,...
+      const resolutionMatch = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+      if (resolutionMatch && resolutionMatch[1] && resolutionMatch[2]) {
+        const width = parseInt(resolutionMatch[1], 10);
+        const height = parseInt(resolutionMatch[2], 10);
+        if (!isNaN(width) && !isNaN(height) && width > 0 && height > 0) {
+          return { width, height };
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Testable version of parseDuration
+ */
+function parseDuration(content: string): number | undefined {
+  const lines = content.split('\n');
+  let totalDuration = 0;
+  let hasExtInf = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Look for #EXTINF tag
+    // Format: #EXTINF:duration, or #EXTINF:duration,optional-title
+    if (line.startsWith('#EXTINF:')) {
+      hasExtInf = true;
+      // Extract duration value (first number after the colon, before comma or end of line)
+      const durationMatch = line.match(/^#EXTINF:([\d.]+)/);
+      if (durationMatch && durationMatch[1]) {
+        const duration = parseFloat(durationMatch[1]);
+        if (!isNaN(duration) && duration > 0) {
+          totalDuration += duration;
+        }
+      }
+    }
+  }
+
+  // Only return duration if we found at least one #EXTINF tag
+  return hasExtInf && totalDuration > 0 ? totalDuration : undefined;
+}
+
+describe('parseResolution', () => {
+  it('should parse resolution from #EXT-X-STREAM-INF tag', () => {
+    const content = `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028"
+playlist.m3u8`;
+    const result = parseResolution(content);
+    expect(result).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('should parse resolution with different values', () => {
+    const content = `#EXTM3U
+#EXT-X-STREAM-INF:RESOLUTION=1280x720,BANDWIDTH=3000000
+playlist.m3u8`;
+    const result = parseResolution(content);
+    expect(result).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('should parse resolution case-insensitively', () => {
+    const content = `#EXTM3U
+#EXT-X-STREAM-INF:resolution=3840x2160
+playlist.m3u8`;
+    const result = parseResolution(content);
+    expect(result).toEqual({ width: 3840, height: 2160 });
+  });
+
+  it('should return undefined when no resolution found', () => {
+    const content = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+segment1.ts`;
+    const result = parseResolution(content);
+    expect(result).toBeUndefined();
+  });
+
+  it('should return undefined for empty content', () => {
+    const result = parseResolution('');
+    expect(result).toBeUndefined();
+  });
+
+  it('should handle multiple stream inf tags and return first resolution', () => {
+    const content = `#EXTM3U
+#EXT-X-STREAM-INF:RESOLUTION=1920x1080
+playlist1.m3u8
+#EXT-X-STREAM-INF:RESOLUTION=1280x720
+playlist2.m3u8`;
+    const result = parseResolution(content);
+    expect(result).toEqual({ width: 1920, height: 1080 });
+  });
+});
+
+describe('parseDuration', () => {
+  it('should calculate total duration from #EXTINF tags', () => {
+    const content = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#EXTINF:10.0,
+segment1.ts
+#EXTINF:10.0,
+segment2.ts
+#EXTINF:5.5,
+segment3.ts`;
+    const result = parseDuration(content);
+    expect(result).toBeCloseTo(25.5, 1);
+  });
+
+  it('should handle duration with comma and title', () => {
+    const content = `#EXTM3U
+#EXTINF:10.0,Segment Title
+segment1.ts
+#EXTINF:15.5,Another Segment
+segment2.ts`;
+    const result = parseDuration(content);
+    expect(result).toBeCloseTo(25.5, 1);
+  });
+
+  it('should handle fractional durations', () => {
+    const content = `#EXTM3U
+#EXTINF:9.567,
+segment1.ts
+#EXTINF:10.123,
+segment2.ts`;
+    const result = parseDuration(content);
+    expect(result).toBeCloseTo(19.69, 1);
+  });
+
+  it('should return undefined when no #EXTINF tags found', () => {
+    const content = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10`;
+    const result = parseDuration(content);
+    expect(result).toBeUndefined();
+  });
+
+  it('should return undefined for empty content', () => {
+    const result = parseDuration('');
+    expect(result).toBeUndefined();
+  });
+
+  it('should handle large playlists with many segments', () => {
+    const content = `#EXTM3U
+#EXT-X-VERSION:3
+${Array.from({ length: 100 }, (_, i) => `#EXTINF:10.0,\nsegment${i}.ts`).join('\n')}`;
+    const result = parseDuration(content);
+    expect(result).toBeCloseTo(1000.0, 1);
+  });
+
+  it('should ignore invalid duration values', () => {
+    const content = `#EXTM3U
+#EXTINF:10.0,
+segment1.ts
+#EXTINF:invalid,
+segment2.ts
+#EXTINF:5.0,
+segment3.ts`;
+    const result = parseDuration(content);
+    expect(result).toBeCloseTo(15.0, 1);
+  });
+});
