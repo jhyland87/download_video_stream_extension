@@ -23,6 +23,7 @@ export interface Manifest {
   capturedAt: string;
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
+  tabId?: number; // Tab ID where the manifest was captured (for title extraction)
 }
 
 /**
@@ -86,7 +87,8 @@ export type MessageAction =
   | 'downloadProgress'
   | 'downloadError'
   | 'manifestCaptured'
-  | 'segmentDownloaded';
+  | 'segmentDownloaded'
+  | 'm3u8ResponseCaptured';
 
 /**
  * Base message interface
@@ -186,6 +188,17 @@ export interface SegmentDownloadedMessage extends BaseMessage {
 }
 
 /**
+ * M3U8 response captured message (from content script)
+ */
+export interface M3U8ResponseCapturedMessage extends BaseMessage {
+  action: 'm3u8ResponseCaptured';
+  url: string;
+  content: string;
+  status: number;
+  statusText: string;
+}
+
+/**
  * Union type for all messages
  */
 export type ExtensionMessage =
@@ -198,7 +211,8 @@ export type ExtensionMessage =
   | DownloadProgressMessage
   | DownloadErrorMessage
   | ManifestCapturedMessage
-  | SegmentDownloadedMessage;
+  | SegmentDownloadedMessage
+  | M3U8ResponseCapturedMessage;
 
 /**
  * Response for getStatus action

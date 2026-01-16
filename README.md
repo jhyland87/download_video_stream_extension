@@ -2,6 +2,10 @@
 
 A Chrome extension that captures HLS stream m3u8 files and their associated segment files, then packages them into a ZIP file for download.
 
+
+![Alt text for the image](assets/demo.gif)
+
+
 ## Features
 
 - Automatically detects and captures `index-f*-v*-a*.m3u8` manifest files

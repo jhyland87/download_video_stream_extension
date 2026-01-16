@@ -16,7 +16,7 @@ import type {
   ClearManifestMessage,
   SegmentDownloadedMessage,
   StartDownloadMessage,
-  CancelDownloadMessage
+  CancelDownloadMessage,
 } from './types/index.js';
 
 /**
@@ -28,6 +28,12 @@ const M3U8_PATTERN = /\.m3u8(\?|$)/i;
 const BATCH_SIZE = 10;
 
 const RETRY_BATCH_SIZE = 5;
+
+/**
+ * Maximum number of manifests to keep in history.
+ * Prevents unbounded memory growth.
+ */
+const MAX_MANIFEST_HISTORY = 100;
 
 /**
  * Array of captured manifest objects.
@@ -50,9 +56,44 @@ function generateManifestId(): string {
 console.log('[Stream Video Saver] Background script loaded');
 console.log('[Stream Video Saver] Starting continuous monitoring for m3u8 files...');
 
-// Start monitoring automatically when extension loads
+/**
+ * Map to store request headers by requestId for m3u8 requests.
+ * Headers are captured in onBeforeSendHeaders and used in onCompleted.
+ */
+const requestHeadersMap = new Map<string, chrome.webRequest.HttpHeader[]>();
+
+// Capture request headers for m3u8 files BEFORE they're sent
+// This is necessary because requestHeaders are not available in onCompleted
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details: chrome.webRequest.WebRequestHeadersDetails) => {
+    if (M3U8_PATTERN.test(details.url)) {
+      console.log(`[Stream Video Saver] Capturing headers for m3u8 request: ${details.url} (requestId: ${details.requestId})`);
+      if (details.requestHeaders) {
+        console.log(`[Stream Video Saver] requestHeaders for m3u8 (${details.requestHeaders.length} headers):`);
+        for (const header of details.requestHeaders) {
+          console.log(`  ${header.name}: ${header.value || '(empty)'}`);
+        }
+        requestHeadersMap.set(details.requestId, details.requestHeaders);
+        // Clean up after 5 minutes to prevent memory leaks
+        setTimeout(() => {
+          requestHeadersMap.delete(details.requestId);
+        }, 300000);
+      } else {
+        console.warn(`[Stream Video Saver] No requestHeaders available for m3u8 request: ${details.url}`);
+      }
+    }
+  },
+  { urls: ['<all_urls>'] },
+  ['requestHeaders']
+);
+
+// Monitor completed requests and process m3u8 files
 chrome.webRequest.onCompleted.addListener(
   (details: chrome.webRequest.WebResponseDetails) => {
+    // Log all m3u8 requests for debugging
+    if (M3U8_PATTERN.test(details.url)) {
+      console.log(`[Stream Video Saver] webRequest.onCompleted: ${details.url} (status: ${details.statusCode}, tabId: ${details.tabId}, requestId: ${details.requestId})`);
+    }
     handleRequestCompleted(details as unknown as chrome.webRequest.WebRequestBodyDetails);
   },
   { urls: ['<all_urls>'] },
@@ -60,6 +101,7 @@ chrome.webRequest.onCompleted.addListener(
 );
 
 console.log('[Stream Video Saver] ✅ Continuous monitoring active');
+console.log(`[Stream Video Saver] M3U8_PATTERN: ${M3U8_PATTERN}`);
 
 /**
  * Handles the 'getStatus' action by filtering and deduplicating manifests.
@@ -217,6 +259,174 @@ function handleGetDownloadStatus(sendResponse: (response: ExtensionResponse) => 
   }));
   const response: GetDownloadStatusResponse = { downloads: statuses };
   sendResponse(response);
+}
+
+/**
+ * Processes m3u8 content fetched by the background script.
+ * @param url - The m3u8 URL
+ * @param text - The m3u8 content
+ * @param details - The request details (for tabId, etc.)
+ */
+async function processM3U8Content(
+  url: string,
+  text: string,
+  details: chrome.webRequest.WebRequestBodyDetails & { tabId?: number }
+): Promise<void> {
+  const urlWithoutQuery = url.split('?')[0];
+
+  console.log(`[Stream Video Saver] M3U8 content length: ${text.length} chars`);
+  console.log(`[Stream Video Saver] M3U8 content preview (first 500 chars): ${text.substring(0, 500)}`);
+
+  // Extract filename for display
+  const urlObj = new URL(url.split('?')[0]);
+  const pathParts = urlObj.pathname.split('/');
+  const fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
+
+  // Only process VOD (Video On Demand) playlists - skip master playlists and live streams
+  if (!text.includes('#EXT-X-PLAYLIST-TYPE:VOD')) {
+    console.log(`[Stream Video Saver] Skipping non-VOD manifest: ${fileName} (missing #EXT-X-PLAYLIST-TYPE:VOD)`);
+    return;
+  }
+
+  // Parse and store expected segment URLs immediately
+  const segmentUrls = parseM3U8(text, url);
+
+  // Only add to history if it has segments (additional safety check)
+  if (segmentUrls.length === 0) {
+    console.log(`[Stream Video Saver] Skipping manifest with no segments: ${fileName}`);
+    return;
+  }
+
+  // Parse resolution and duration from manifest
+  const resolution = parseResolution(text);
+  const duration = parseDuration(text);
+
+  if (resolution) {
+    console.log(`[Stream Video Saver] Found resolution: ${resolution.width}x${resolution.height}`);
+  }
+  if (duration) {
+    const minutes = Math.floor(duration / 60);
+    const seconds = Math.floor(duration % 60);
+    console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
+  }
+
+  // Try to get video title from the page (needed for duplicate detection)
+  let title: string | undefined;
+
+  // First, try to get video title from content script
+  if (details.tabId && details.tabId > 0) {
+    try {
+      const videoTitleResponse = await chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' });
+      if (videoTitleResponse && videoTitleResponse.title) {
+        title = videoTitleResponse.title;
+        console.log(`[Stream Video Saver] Found video title from content script: ${title}`);
+      }
+    } catch (error) {
+      // Content script might not be available, continue to fallback
+      console.log('[Stream Video Saver] Could not get video title from content script, trying tab title');
+    }
+  }
+
+  // Fallback to tab title if video title not found
+  if (!title && details.tabId && details.tabId > 0) {
+    try {
+      const tab = await chrome.tabs.get(details.tabId);
+      if (tab && tab.title) {
+        title = tab.title;
+        console.log(`[Stream Video Saver] Using tab title: ${title}`);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.log(`[Stream Video Saver] Could not get tab title: ${errorMessage}`);
+    }
+  }
+
+  // Check for duplicates: same URL OR (same title AND same segment count)
+  // This check happens after title is fetched so we can properly detect title+segment duplicates
+  const duplicateCheck = manifestHistory.find((m) => {
+    const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
+    const urlMatch = existingUrlWithoutQuery === urlWithoutQuery;
+
+    // If we have a title and segment count, also check for title + segment match
+    if (title && segmentUrls.length > 0) {
+      const titleMatch = m.title === title;
+      const segmentCountMatch = m.expectedSegments.length === segmentUrls.length;
+      return urlMatch || (titleMatch && segmentCountMatch);
+    }
+
+    // Fallback to URL match only if no title
+    return urlMatch;
+  });
+
+  if (duplicateCheck) {
+    // Update existing manifest with newer data (keep most recent)
+    console.log(`[Stream Video Saver] Duplicate detected, updating existing manifest: ${fileName}`);
+    duplicateCheck.m3u8Url = url; // Update URL in case query params changed
+    duplicateCheck.m3u8Content = text; // Update content
+    duplicateCheck.m3u8FileName = fileName; // Update filename
+    duplicateCheck.title = title || duplicateCheck.title; // Update title if we have a better one
+    duplicateCheck.expectedSegments = segmentUrls; // Update segments
+    duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
+    duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
+    duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
+
+    // Notify popup that manifest was updated
+    chrome.runtime.sendMessage({
+      action: 'manifestCaptured',
+      manifestId: duplicateCheck.id,
+      fileName: fileName,
+      title: title,
+      segmentCount: segmentUrls.length
+    } as ExtensionMessage).catch(() => {
+      // Ignore if no listeners
+    });
+
+    return;
+  }
+
+  // Create manifest object and add to history
+  const manifestId = generateManifestId();
+  const manifest: Manifest = {
+    id: manifestId,
+    m3u8Url: url,
+    m3u8Content: text,
+    m3u8FileName: fileName,
+    title: title,
+    expectedSegments: segmentUrls,
+    capturedAt: new Date().toISOString(),
+    resolution: resolution,
+    duration: duration,
+    tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined
+  };
+
+  manifestHistory.push(manifest);
+
+  // Prevent unbounded memory growth by limiting manifest history
+  if (manifestHistory.length > MAX_MANIFEST_HISTORY) {
+    // Remove oldest manifests (keep most recent)
+    const excess = manifestHistory.length - MAX_MANIFEST_HISTORY;
+    manifestHistory.splice(0, excess);
+    console.log(`[Stream Video Saver] Trimmed manifest history: removed ${excess} oldest manifests (keeping ${MAX_MANIFEST_HISTORY} most recent)`);
+  }
+
+  console.log(`[Stream Video Saver] ✅ M3U8 captured and added to history: ${fileName}`);
+  console.log(`[Stream Video Saver] 📋 Found ${segmentUrls.length} segments`);
+  console.log(`[Stream Video Saver] 📚 Total manifests in history: ${manifestHistory.length}`);
+
+  if (segmentUrls.length > 0) {
+    console.log(`[Stream Video Saver] First few segments: ${segmentUrls.slice(0, 3)}`);
+  }
+
+  // Notify popup that a new manifest is available
+  chrome.runtime.sendMessage({
+    action: 'manifestCaptured',
+    manifestId: manifestId,
+    fileName: fileName,
+    title: title,
+    segmentCount: segmentUrls.length
+  } as ExtensionMessage).catch(() => {
+    // Ignore if no listeners
+  });
 }
 
 /**
@@ -455,8 +665,10 @@ const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
  * Filters for VOD playlists only, fetches content, parses segments, and stores in manifest history.
  * @param details - Details about the completed request
  */
-async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyDetails): Promise<void> {
+async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyDetails & { requestHeaders?: chrome.webRequest.HttpHeader[] }): Promise<void> {
   const url = details.url;
+
+  console.log(`[Stream Video Saver] handleRequestCompleted called for: ${url}`);
 
   // Check if it's an m3u8 file
   if (!M3U8_PATTERN.test(url)) {
@@ -464,6 +676,8 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
   }
 
   const urlWithoutQuery = url.split('?')[0];
+
+  console.log(`[Stream Video Saver] ✓ M3U8 file detected: ${url} (pattern matched)`);
 
   // Skip if we've processed this URL recently (cooldown period)
   if (recentlyProcessed.has(urlWithoutQuery)) {
@@ -478,6 +692,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
 
   if (existingManifest) {
     // Already have it, skip processing
+    console.log(`[Stream Video Saver] Skipping ${url} - already in history`);
     return;
   }
 
@@ -489,162 +704,85 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     recentlyProcessed.delete(urlWithoutQuery);
   }, PROCESSING_COOLDOWN);
 
-  console.log(`[Stream Video Saver] ✓ M3U8 file detected (new): ${url}`);
-
   try {
-    // Fetch the m3u8 content using the extension's context (bypasses CORS)
+
+    // Fetch the m3u8 with headers from the original request
+    // Headers are captured in onBeforeSendHeaders and stored by requestId
+    const headers: Record<string, string> = {};
+
+    // Look up the captured headers for this request
+    const capturedHeaders = requestHeadersMap.get(details.requestId);
+    if (capturedHeaders) {
+      console.log(`[Stream Video Saver] Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
+      // Copy important headers from the original request
+      for (const header of capturedHeaders) {
+        const name = header.name.toLowerCase();
+        // Include headers that servers often check for authentication/origin
+        if (
+          name === 'origin' ||
+          name === 'referer' ||
+          name === 'user-agent' ||
+          name === 'accept' ||
+          name === 'accept-language' ||
+          name === 'accept-encoding' ||
+          name.startsWith('sec-') ||
+          name.startsWith('x-') ||
+          name === 'authorization'
+        ) {
+          headers[header.name] = header.value || '';
+          console.log(`[Stream Video Saver] Copying header: ${header.name} = ${header.value?.substring(0, 50)}...`);
+        }
+      }
+      // Clean up the captured headers
+      requestHeadersMap.delete(details.requestId);
+    } else {
+      console.log(`[Stream Video Saver] No captured headers found for requestId: ${details.requestId}`);
+    }
+
     console.log(`[Stream Video Saver] Fetching m3u8 content from: ${url}`);
-    const response = await fetch(url);
+    console.log(`[Stream Video Saver] Total headers to send: ${Object.keys(headers).length}`);
+
+    // Log key headers for debugging
+    const keyHeaders = ['Origin', 'origin', 'Referer', 'referer', 'Sec-Fetch-Site', 'Sec-Ch-Ua'];
+    for (const key of keyHeaders) {
+      if (headers[key]) {
+        console.log(`[Stream Video Saver] Header ${key}: ${headers[key].substring(0, 100)}`);
+      }
+    }
+
+    // Always include headers if we have any, otherwise use minimal defaults
+    const fetchOptions: RequestInit = {
+      credentials: 'include', // Important: include cookies for authentication
+      referrerPolicy: 'origin',
+      referrer: 'origin'
+    };
+
+    if (Object.keys(headers).length > 0) {
+      fetchOptions.headers = headers;
+      console.log(`[Stream Video Saver] Using ${Object.keys(headers).length} headers from original request`);
+    } else {
+      console.warn(`[Stream Video Saver] WARNING: No headers available! This may cause 403 errors.`);
+    }
+
+    console.log(`[Stream Video Saver] Fetch options: credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
+    // Fetch the m3u8 content with the same headers as the original request
+    const response = await fetch(url, fetchOptions);
+
     if (!response.ok) {
       console.error(`[Stream Video Saver] Failed to fetch m3u8: ${response.status} ${response.statusText}`);
+
+      // If we got a 403 and didn't use headers, log a warning
+      if (response.status === 403 && Object.keys(headers).length === 0) {
+        console.warn(`[Stream Video Saver] Got 403 Forbidden. Request headers may be needed.`);
+      }
+
       return;
     }
 
     const text = await response.text();
-    console.log(`[Stream Video Saver] M3U8 content length: ${text.length} chars`);
-    console.log(`[Stream Video Saver] M3U8 content preview (first 500 chars): ${text.substring(0, 500)}`);
 
-    // Extract filename for display
-    const urlObj = new URL(url.split('?')[0]);
-    const pathParts = urlObj.pathname.split('/');
-    const fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
-
-    // Only process VOD (Video On Demand) playlists - skip master playlists and live streams
-    if (!text.includes('#EXT-X-PLAYLIST-TYPE:VOD')) {
-      console.log(`[Stream Video Saver] Skipping non-VOD manifest: ${fileName} (missing #EXT-X-PLAYLIST-TYPE:VOD)`);
-      return;
-    }
-
-    // Parse and store expected segment URLs immediately
-    const segmentUrls = parseM3U8(text, url);
-
-    // Only add to history if it has segments (additional safety check)
-    if (segmentUrls.length === 0) {
-      console.log(`[Stream Video Saver] Skipping manifest with no segments: ${fileName}`);
-      return;
-    }
-
-    // Parse resolution and duration from manifest
-    const resolution = parseResolution(text);
-    const duration = parseDuration(text);
-
-    if (resolution) {
-      console.log(`[Stream Video Saver] Found resolution: ${resolution.width}x${resolution.height}`);
-    }
-    if (duration) {
-      const minutes = Math.floor(duration / 60);
-      const seconds = Math.floor(duration % 60);
-      console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
-    }
-
-    // Try to get video title from the page (needed for duplicate detection)
-    let title: string | undefined;
-
-    // First, try to get video title from content script
-    if (details.tabId && details.tabId > 0) {
-      try {
-        const videoTitleResponse = await chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' });
-        if (videoTitleResponse && videoTitleResponse.title) {
-          title = videoTitleResponse.title;
-          console.log(`[Stream Video Saver] Found video title from content script: ${title}`);
-        }
-      } catch (error) {
-        // Content script might not be available, continue to fallback
-        console.log('[Stream Video Saver] Could not get video title from content script, trying tab title');
-      }
-    }
-
-    // Fallback to tab title if video title not found
-    if (!title && details.tabId && details.tabId > 0) {
-      try {
-        const tab = await chrome.tabs.get(details.tabId);
-        if (tab && tab.title) {
-          title = tab.title;
-          console.log(`[Stream Video Saver] Using tab title: ${title}`);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`[Stream Video Saver] Could not get tab title: ${errorMessage}`);
-      }
-    }
-
-    // Check for duplicates: same URL OR (same title AND same segment count)
-    // This check happens after title is fetched so we can properly detect title+segment duplicates
-    const duplicateCheck = manifestHistory.find((m) => {
-      const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
-      const urlMatch = existingUrlWithoutQuery === urlWithoutQuery;
-
-      // If we have a title and segment count, also check for title + segment match
-      if (title && segmentUrls.length > 0) {
-        const titleMatch = m.title === title;
-        const segmentCountMatch = m.expectedSegments.length === segmentUrls.length;
-        return urlMatch || (titleMatch && segmentCountMatch);
-      }
-
-      // Fallback to URL match only if no title
-      return urlMatch;
-    });
-
-    if (duplicateCheck) {
-      // Update existing manifest with newer data (keep most recent)
-      console.log(`[Stream Video Saver] Duplicate detected, updating existing manifest: ${fileName}`);
-      duplicateCheck.m3u8Url = url; // Update URL in case query params changed
-      duplicateCheck.m3u8Content = text; // Update content
-      duplicateCheck.m3u8FileName = fileName; // Update filename
-      duplicateCheck.title = title || duplicateCheck.title; // Update title if we have a better one
-      duplicateCheck.expectedSegments = segmentUrls; // Update segments
-      duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
-      duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
-      duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
-
-      // Notify popup that manifest was updated
-      chrome.runtime.sendMessage({
-        action: 'manifestCaptured',
-        manifestId: duplicateCheck.id,
-        fileName: fileName,
-        title: title,
-        segmentCount: segmentUrls.length
-      } as ExtensionMessage).catch(() => {
-        // Ignore if no listeners
-      });
-
-      return;
-    }
-
-    // Create manifest object and add to history
-    const manifestId = generateManifestId();
-    const manifest: Manifest = {
-      id: manifestId,
-      m3u8Url: url,
-      m3u8Content: text,
-      m3u8FileName: fileName,
-      title: title,
-      expectedSegments: segmentUrls,
-      capturedAt: new Date().toISOString(),
-      resolution: resolution,
-      duration: duration
-    };
-
-    manifestHistory.push(manifest);
-
-    console.log(`[Stream Video Saver] ✅ M3U8 captured and added to history: ${fileName}`);
-    console.log(`[Stream Video Saver] 📋 Found ${segmentUrls.length} segments`);
-    console.log(`[Stream Video Saver] 📚 Total manifests in history: ${manifestHistory.length}`);
-
-    if (segmentUrls.length > 0) {
-      console.log(`[Stream Video Saver] First few segments: ${segmentUrls.slice(0, 3)}`);
-    }
-
-    // Notify popup that a new manifest is available
-    chrome.runtime.sendMessage({
-      action: 'manifestCaptured',
-      manifestId: manifestId,
-      fileName: fileName,
-      title: title,
-      segmentCount: segmentUrls.length
-    } as ExtensionMessage).catch(() => {
-      // Ignore if no listeners
-    });
+    // Process the fetched content
+    await processM3U8Content(url, text, details);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Stream Video Saver] Error fetching m3u8: ${errorMessage}`, error);

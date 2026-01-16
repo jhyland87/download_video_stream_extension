@@ -70,13 +70,28 @@ function extractVideoTitle(): string | null {
 chrome.runtime.onMessage.addListener((
   message: { action: string },
   _sender: chrome.runtime.MessageSender,
-  sendResponse: (response: { title: string | null }) => void
+  sendResponse: (response: { title: string | null } | { blobUrl?: string; error?: string }) => void
 ): boolean => {
   if (message.action === 'getVideoTitle') {
     const title = extractVideoTitle();
     sendResponse({ title });
     return true;
   }
+
+  // Handle createBlobUrl message
+  if (message.action === 'createBlobUrl' && 'arrayBuffer' in message && 'mimeType' in message) {
+    try {
+      const blob = new Blob([message.arrayBuffer as ArrayBuffer], { type: message.mimeType as string });
+      const blobUrl = URL.createObjectURL(blob);
+      sendResponse({ blobUrl });
+      console.log(`[Stream Video Saver] Content script created Blob URL: ${blobUrl}`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      sendResponse({ error: `Failed to create Blob URL: ${errorMessage}` });
+      console.error(`[Stream Video Saver] Content script failed to create Blob URL: ${errorMessage}`);
+    }
+    return true;
+  }
+
   return false;
 });
-
