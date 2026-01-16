@@ -10,11 +10,24 @@
 // Types are available via global.d.ts
 // JSZip will be loaded via importScripts in the bundled output
 
+// Import message types for type annotations
+import type {
+  GetManifestDataMessage,
+  ClearManifestMessage,
+  SegmentDownloadedMessage,
+  StartDownloadMessage,
+  CancelDownloadMessage
+} from './types/index.js';
+
 /**
  * Regular expression pattern to match m3u8 files in URLs.
  * Matches any .m3u8 file including master.m3u8, index-f*-v*-a*.m3u8, etc.
  */
 const M3U8_PATTERN = /\.m3u8(\?|$)/i;
+
+const BATCH_SIZE = 10;
+
+const RETRY_BATCH_SIZE = 5;
 
 /**
  * Array of captured manifest objects.
@@ -49,8 +62,166 @@ chrome.webRequest.onCompleted.addListener(
 console.log('[Stream Video Saver] ✅ Continuous monitoring active');
 
 /**
+ * Handles the 'getStatus' action by filtering and deduplicating manifests.
+ * @param sendResponse - Function to send the response back
+ */
+function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): void {
+  // Filter out manifests with no segments and remove duplicates
+  // Group by URL (without query params) OR (title + segment count) and keep only the most recent one
+  const manifestsWithSegments = manifestHistory
+    .filter((m) => m.expectedSegments.length > 0) // Only include manifests with segments
+    .map((m) => ({
+      id: m.id,
+      fileName: m.m3u8FileName,
+      title: m.title,
+      url: m.m3u8Url,
+      segmentCount: m.expectedSegments.length,
+      capturedAt: m.capturedAt,
+      resolution: m.resolution,
+      duration: m.duration,
+      urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
+      dedupKey: m.title && m.expectedSegments.length > 0
+        ? `${m.title}|${m.expectedSegments.length}` // Title + segment count for deduplication
+        : m.m3u8Url.split('?')[0] // Fallback to URL if no title
+    }));
+
+  // Group by dedupKey and keep only the most recent one for each group
+  const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
+  for (const m of manifestsWithSegments) {
+    const existing = groupedByKey.get(m.dedupKey);
+    if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
+      groupedByKey.set(m.dedupKey, m);
+    }
+  }
+
+  // Convert map values to array and remove helper keys
+  const filtered = Array.from(groupedByKey.values())
+    .map((m) => ({
+      id: m.id,
+      fileName: m.fileName,
+      title: m.title,
+      url: m.url,
+      segmentCount: m.segmentCount,
+      capturedAt: m.capturedAt,
+      resolution: m.resolution,
+      duration: m.duration
+    }))
+    // Sort by capturedAt in descending order (most recent first)
+    .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+
+  console.log(`[Stream Video Saver] getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
+  console.log(`[Stream Video Saver] Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
+  const response: GetStatusResponse = {
+    manifestHistory: filtered
+  };
+  sendResponse(response);
+}
+
+/**
+ * Handles the 'getManifestData' action by retrieving manifest data by ID.
+ * @param message - The getManifestData message
+ * @param sendResponse - Function to send the response back
+ */
+function handleGetManifestData(message: GetManifestDataMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  // Get data for a specific manifest by ID
+  const manifest = manifestHistory.find((m) => m.id === message.manifestId);
+  if (manifest) {
+    const response: GetManifestDataResponse = {
+      id: manifest.id,
+      m3u8Url: manifest.m3u8Url,
+      m3u8Content: manifest.m3u8Content,
+      m3u8FileName: manifest.m3u8FileName,
+      expectedSegments: manifest.expectedSegments
+    };
+    sendResponse(response);
+  } else {
+    sendResponse({ error: 'Manifest not found' });
+  }
+}
+
+/**
+ * Handles the 'clearManifest' action by removing a manifest or all manifests.
+ * @param message - The clearManifest message
+ * @param sendResponse - Function to send the response back
+ */
+function handleClearManifest(message: ClearManifestMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  // Clear a specific manifest or all manifests
+  if (message.manifestId) {
+    manifestHistory = manifestHistory.filter((m) => m.id !== message.manifestId);
+    console.log(`[Stream Video Saver] ✅ Manifest cleared: ${message.manifestId}. Remaining: ${manifestHistory.length}`);
+  } else {
+    manifestHistory = [];
+    console.log('[Stream Video Saver] ✅ All manifests cleared');
+  }
+  const response: SuccessResponse = { success: true };
+  sendResponse(response);
+}
+
+/**
+ * Handles the 'segmentDownloaded' action (currently just acknowledges the message).
+ * @param message - The segmentDownloaded message
+ * @param sendResponse - Function to send the response back
+ */
+function handleSegmentDownloaded(message: SegmentDownloadedMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  // Track that a segment was downloaded (for progress tracking only)
+  const segmentUrl = message.segmentUrl;
+  console.log(`[Stream Video Saver] 📥 Segment downloaded: ${segmentUrl}`);
+
+  // Find the manifest this segment belongs to (if we track it)
+  // For now, just acknowledge
+  const response: SuccessResponse = {
+    success: true
+  };
+  sendResponse(response);
+}
+
+/**
+ * Handles the 'startDownload' action by initiating a background download.
+ * @param message - The startDownload message
+ * @param sendResponse - Function to send the response back
+ */
+function handleStartDownload(message: StartDownloadMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  // Start a download in the background
+  const { manifestId, format } = message;
+  startDownload(manifestId, format).catch((error) => {
+    console.error('[Stream Video Saver] Error starting download:', error);
+  });
+  const response: SuccessResponse = { success: true };
+  sendResponse(response);
+}
+
+/**
+ * Handles the 'cancelDownload' action by cancelling an ongoing download.
+ * @param message - The cancelDownload message
+ * @param sendResponse - Function to send the response back
+ */
+function handleCancelDownload(message: CancelDownloadMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  // Cancel an ongoing download
+  const { downloadId } = message;
+  cancelDownload(downloadId);
+  const response: SuccessResponse = { success: true };
+  sendResponse(response);
+}
+
+/**
+ * Handles the 'getDownloadStatus' action by returning status of all ongoing downloads.
+ * @param sendResponse - Function to send the response back
+ */
+function handleGetDownloadStatus(sendResponse: (response: ExtensionResponse) => void): void {
+  // Get status of ongoing downloads
+  const statuses = Array.from(activeDownloads.entries()).map(([id, download]) => ({
+    downloadId: id,
+    manifestId: download.manifestId,
+    format: download.format,
+    progress: download.progress || { downloaded: 0, total: 0, status: 'starting' as DownloadStatus }
+  }));
+  const response: GetDownloadStatusResponse = { downloads: statuses };
+  sendResponse(response);
+}
+
+/**
  * Message handler for communication with popup and content scripts.
- * Handles various actions: getStatus, getManifestData, clearManifest, startDownload, cancelDownload, getDownloadStatus
+ * Routes messages to appropriate handler functions.
  */
 chrome.runtime.onMessage.addListener((
   message: ExtensionMessage,
@@ -59,120 +230,39 @@ chrome.runtime.onMessage.addListener((
 ): boolean => {
   console.log(`[Stream Video Saver] Background received message: ${message.action}`);
 
-  if (message.action === 'getStatus') {
-    // Filter out manifests with no segments and remove duplicates
-    // Group by URL (without query params) OR (title + segment count) and keep only the most recent one
-    const manifestsWithSegments = manifestHistory
-      .filter((m) => m.expectedSegments.length > 0) // Only include manifests with segments
-      .map((m) => ({
-        id: m.id,
-        fileName: m.m3u8FileName,
-        title: m.title,
-        url: m.m3u8Url,
-        segmentCount: m.expectedSegments.length,
-        capturedAt: m.capturedAt,
-        resolution: m.resolution,
-        duration: m.duration,
-        urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
-        dedupKey: m.title && m.expectedSegments.length > 0
-          ? `${m.title}|${m.expectedSegments.length}` // Title + segment count for deduplication
-          : m.m3u8Url.split('?')[0] // Fallback to URL if no title
-      }));
+  switch (message.action) {
+    case 'getStatus':
+      handleGetStatus(sendResponse);
+      return true; // Indicate we will send a response
 
-    // Group by dedupKey and keep only the most recent one for each group
-    const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
-    for (const m of manifestsWithSegments) {
-      const existing = groupedByKey.get(m.dedupKey);
-      if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
-        groupedByKey.set(m.dedupKey, m);
-      }
-    }
+    case 'getManifestData':
+      handleGetManifestData(message as GetManifestDataMessage, sendResponse);
+      return true;
 
-    // Convert map values to array and remove helper keys
-    const filtered = Array.from(groupedByKey.values())
-      .map((m) => ({
-        id: m.id,
-        fileName: m.fileName,
-        title: m.title,
-        url: m.url,
-        segmentCount: m.segmentCount,
-        capturedAt: m.capturedAt,
-        resolution: m.resolution,
-        duration: m.duration
-      }))
-      // Sort by capturedAt in descending order (most recent first)
-      .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+    case 'clearManifest':
+      handleClearManifest(message as ClearManifestMessage, sendResponse);
+      return true;
 
-    console.log(`[Stream Video Saver] getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
-    console.log(`[Stream Video Saver] Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
-    const response: GetStatusResponse = {
-      manifestHistory: filtered
-    };
-    sendResponse(response);
-    return true; // Indicate we will send a response
-  } else if (message.action === 'getManifestData') {
-    // Get data for a specific manifest by ID
-    const manifest = manifestHistory.find((m) => m.id === message.manifestId);
-    if (manifest) {
-      const response: GetManifestDataResponse = {
-        id: manifest.id,
-        m3u8Url: manifest.m3u8Url,
-        m3u8Content: manifest.m3u8Content,
-        m3u8FileName: manifest.m3u8FileName,
-        expectedSegments: manifest.expectedSegments
-      };
-      sendResponse(response);
-    } else {
-      sendResponse({ error: 'Manifest not found' });
-    }
-  } else if (message.action === 'clearManifest') {
-    // Clear a specific manifest or all manifests
-    if (message.manifestId) {
-      manifestHistory = manifestHistory.filter((m) => m.id !== message.manifestId);
-      console.log(`[Stream Video Saver] ✅ Manifest cleared: ${message.manifestId}. Remaining: ${manifestHistory.length}`);
-    } else {
-      manifestHistory = [];
-      console.log('[Stream Video Saver] ✅ All manifests cleared');
-    }
-    const response: SuccessResponse = { success: true };
-    sendResponse(response);
-  } else if (message.action === 'segmentDownloaded') {
-    // Track that a segment was downloaded (for progress tracking only)
-    const segmentUrl = message.segmentUrl;
-    console.log(`[Stream Video Saver] 📥 Segment downloaded: ${segmentUrl}`);
+    case 'segmentDownloaded':
+      handleSegmentDownloaded(message as SegmentDownloadedMessage, sendResponse);
+      return true;
 
-    // Find the manifest this segment belongs to (if we track it)
-    // For now, just acknowledge
-    const response: SuccessResponse = {
-      success: true
-    };
-    sendResponse(response);
-  } else if (message.action === 'startDownload') {
-    // Start a download in the background
-    const { manifestId, format } = message;
-    startDownload(manifestId, format).catch((error) => {
-      console.error('[Stream Video Saver] Error starting download:', error);
-    });
-    const response: SuccessResponse = { success: true };
-    sendResponse(response);
-  } else if (message.action === 'cancelDownload') {
-    // Cancel an ongoing download
-    const { downloadId } = message;
-    cancelDownload(downloadId);
-    const response: SuccessResponse = { success: true };
-    sendResponse(response);
-  } else if (message.action === 'getDownloadStatus') {
-    // Get status of ongoing downloads
-    const statuses = Array.from(activeDownloads.entries()).map(([id, download]) => ({
-      downloadId: id,
-      manifestId: download.manifestId,
-      format: download.format,
-      progress: download.progress || { downloaded: 0, total: 0, status: 'starting' as DownloadStatus }
-    }));
-    const response: GetDownloadStatusResponse = { downloads: statuses };
-    sendResponse(response);
+    case 'startDownload':
+      handleStartDownload(message as StartDownloadMessage, sendResponse);
+      return true;
+
+    case 'cancelDownload':
+      handleCancelDownload(message as CancelDownloadMessage, sendResponse);
+      return true;
+
+    case 'getDownloadStatus':
+      handleGetDownloadStatus(sendResponse);
+      return true;
+
+    default:
+      console.warn(`[Stream Video Saver] Unknown message action: ${(message as { action: unknown }).action}`);
+      return false;
   }
-  return true;
 });
 
 /**
@@ -719,6 +809,10 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   let lastUpdateTime = downloadStartTime;
   let lastDownloadedBytes = 0;
 
+  // Track failed segments for retry
+  const failedInitSegments: string[] = [];
+  const failedSegments: string[] = [];
+
   // Update initial progress
   notifyDownloadProgress(downloadId, {
     downloaded: 0,
@@ -806,20 +900,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         console.error(`[Stream Video Saver] Failed to download init segment ${url}:`, errorMessage);
-        throw new Error(`Failed to download initialization segment: ${errorMessage}`);
+        // Track failed segment for retry instead of throwing immediately
+        failedInitSegments.push(url);
       }
     }
   }
 
   // Download segments in batches
-  const batchSize = 5;
-  for (let i = 0; i < segmentUrls.length; i += batchSize) {
+  for (let i = 0; i < segmentUrls.length; i += BATCH_SIZE) {
     // Check if cancelled
     if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
       throw new Error('Download cancelled');
     }
 
-    const batch = segmentUrls.slice(i, i + batchSize);
+    const batch = segmentUrls.slice(i, i + BATCH_SIZE);
 
     await Promise.all(batch.map(async (url) => {
       if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
@@ -896,8 +990,190 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`[Stream Video Saver] Error downloading segment ${url}:`, errorMessage);
+        // Track failed segment for retry instead of failing immediately
+        failedSegments.push(url);
       }
     }));
+  }
+
+  // Retry failed init segments
+  if (failedInitSegments.length > 0) {
+    console.log(`[Stream Video Saver] Retrying ${failedInitSegments.length} failed init segment(s)...`);
+    for (const url of failedInitSegments) {
+      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+        throw new Error('Download cancelled');
+      }
+
+      try {
+        const response = await fetch(url, { signal });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const blob = await response.blob();
+        const blobSize = blob.size;
+        downloadedBytes += blobSize;
+
+        // Extract filename
+        let fileName: string;
+        try {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            const urlObj = new URL(url);
+            const pathParts = urlObj.pathname.split('/');
+            fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'init.mp4';
+          } else {
+            const urlParts = url.split('?')[0].split('/');
+            fileName = urlParts[urlParts.length - 1] || 'init.mp4';
+          }
+          fileName = fileName.split('?')[0];
+        } catch (error) {
+          fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'init.mp4';
+        }
+
+        if (!fileName) {
+          throw new Error('Could not extract filename from init segment URL');
+        }
+
+        // JSZip accepts Blob directly according to official types
+        zip.file(fileName, blob);
+        downloaded++;
+
+        // Calculate download speed
+        const now = Date.now();
+        const timeDelta = (now - lastUpdateTime) / 1000; // seconds
+        let downloadSpeed = 0;
+        if (timeDelta > 0) {
+          const bytesDelta = downloadedBytes - lastDownloadedBytes;
+          downloadSpeed = bytesDelta / timeDelta; // bytes per second
+          lastUpdateTime = now;
+          lastDownloadedBytes = downloadedBytes;
+        }
+
+        // Update progress
+        const download = activeDownloads.get(downloadId);
+        if (download) {
+          download.progress = {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          };
+        }
+        notifyDownloadProgress(downloadId, {
+          downloaded,
+          total,
+          status: 'downloading',
+          downloadedBytes,
+          totalBytes,
+          downloadSpeed
+        });
+
+        console.log(`[Stream Video Saver] Successfully retried init segment: ${fileName}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`[Stream Video Saver] Failed to retry init segment ${url}:`, errorMessage);
+        throw new Error(`Failed to download initialization segment after retry: ${errorMessage}`);
+      }
+    }
+  }
+
+  // Retry failed regular segments
+  if (failedSegments.length > 0) {
+    console.log(`[Stream Video Saver] Retrying ${failedSegments.length} failed segment(s)...`);
+
+    // Retry failed segments in smaller batches
+    for (let i = 0; i < failedSegments.length; i += RETRY_BATCH_SIZE) {
+      // Check if cancelled
+      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+        throw new Error('Download cancelled');
+      }
+
+      const batch = failedSegments.slice(i, i + RETRY_BATCH_SIZE);
+
+      await Promise.all(batch.map(async (url) => {
+        if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+          return;
+        }
+
+        try {
+          const response = await fetch(url, { signal });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const blob = await response.blob();
+          const blobSize = blob.size;
+          downloadedBytes += blobSize;
+
+          // Extract filename
+          let fileName: string;
+          try {
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              const urlObj = new URL(url);
+              const pathParts = urlObj.pathname.split('/');
+              fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'segment.ts';
+            } else {
+              const urlParts = url.split('?')[0].split('/');
+              fileName = urlParts[urlParts.length - 1] || 'segment.ts';
+            }
+            fileName = fileName.split('?')[0];
+          } catch (error) {
+            fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'segment.ts';
+          }
+
+          if (!fileName) {
+            throw new Error('Could not extract filename from URL');
+          }
+
+          // JSZip accepts Blob directly according to official types
+          zip.file(fileName, blob);
+          downloaded++;
+
+          // Calculate download speed
+          const now = Date.now();
+          const timeDelta = (now - lastUpdateTime) / 1000; // seconds
+          let downloadSpeed = 0;
+          if (timeDelta > 0) {
+            const bytesDelta = downloadedBytes - lastDownloadedBytes;
+            downloadSpeed = bytesDelta / timeDelta; // bytes per second
+            lastUpdateTime = now;
+            lastDownloadedBytes = downloadedBytes;
+          }
+
+          // Update progress
+          const download = activeDownloads.get(downloadId);
+          if (download) {
+            download.progress = {
+              downloaded,
+              total,
+              status: 'downloading',
+              downloadedBytes,
+              totalBytes,
+              downloadSpeed
+            };
+          }
+          notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          });
+
+          console.log(`[Stream Video Saver] Successfully retried segment: ${fileName}`);
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            throw error;
+          }
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`[Stream Video Saver] Failed to retry segment ${url}:`, errorMessage);
+          // Don't throw on retry failure - we'll continue with partial download
+          // Log a warning instead
+          console.warn(`[Stream Video Saver] Segment ${url} failed even after retry. Download may be incomplete.`);
+        }
+      }));
+    }
   }
 
   // Check if cancelled before creating zip
@@ -960,11 +1236,16 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     processedChunks++;
 
     // Update progress periodically during base64 conversion (every 10% or every 100 chunks)
+    // Keep the zipSize and totalBytes in the progress during conversion
     if (processedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0 || processedChunks === totalChunks) {
       notifyDownloadProgress(downloadId, {
         downloaded,
         total,
-        status: 'creating_zip'
+        status: 'creating_zip',
+        downloadedBytes,
+        totalBytes,
+        downloadSpeed: 0,
+        zipSize
       });
     }
   }

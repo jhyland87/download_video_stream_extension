@@ -420,11 +420,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (progressMessage.status === 'creating_zip') {
         if (isHTMLElement(progressInfo)) {
           let text = 'Creating ZIP file...';
-          if (progressMessage.totalBytes) {
-            text += ` (${formatBytes(progressMessage.totalBytes)})`;
-          }
+          // If zipSize is available, the zip file has been created
           if (progressMessage.zipSize) {
-            text = `Creating ZIP file... (${formatBytes(progressMessage.zipSize)})`;
+            text = `Created ${formatBytes(progressMessage.zipSize)} zip file`;
+          } else if (progressMessage.totalBytes) {
+            // Show uncompressed size while zipping is in progress
+            text = `Zipping ${formatBytes(progressMessage.totalBytes)} into zip...`;
           }
           progressInfo.textContent = text;
         }
@@ -456,6 +457,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }, 2000);
         }
       } else {
+        // Status is 'downloading' - show segment progress and total downloaded size
         if (isHTMLElement(progressInfo)) {
           let text = `Downloaded ${progressMessage.downloaded} of ${progressMessage.total} segments`;
           
@@ -464,11 +466,13 @@ document.addEventListener('DOMContentLoaded', () => {
             text += ` • ${formatSpeed(progressMessage.downloadSpeed)}`;
           }
           
-          // Add downloaded/total bytes if available
-          if (progressMessage.downloadedBytes !== undefined && progressMessage.totalBytes !== undefined) {
-            text += ` • ${formatBytes(progressMessage.downloadedBytes)} / ${formatBytes(progressMessage.totalBytes)}`;
-          } else if (progressMessage.downloadedBytes !== undefined) {
+          // Always show total downloaded bytes (uncompressed size) during download
+          if (progressMessage.downloadedBytes !== undefined) {
             text += ` • ${formatBytes(progressMessage.downloadedBytes)}`;
+            // Also show total if available (for progress indication)
+            if (progressMessage.totalBytes !== undefined && progressMessage.totalBytes > progressMessage.downloadedBytes) {
+              text += ` / ${formatBytes(progressMessage.totalBytes)}`;
+            }
           }
           
           progressInfo.textContent = text;
@@ -576,11 +580,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isHTMLElement(progressInfo)) {
           if (download.progress.status === 'creating_zip') {
             let text = 'Creating ZIP file...';
-            if (download.progress.totalBytes) {
-              text += ` (${formatBytes(download.progress.totalBytes)})`;
-            }
+            // If zipSize is available, the zip file has been created
             if (download.progress.zipSize) {
-              text = `Creating ZIP file... (${formatBytes(download.progress.zipSize)})`;
+              text = `Created ${formatBytes(download.progress.zipSize)} zip file`;
+            } else if (download.progress.totalBytes) {
+              // Show uncompressed size while zipping is in progress
+              text = `Zipping ${formatBytes(download.progress.totalBytes)} into zip...`;
             }
             progressInfo.textContent = text;
           } else if (download.progress.status === 'complete') {
@@ -593,6 +598,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             progressInfo.textContent = text;
           } else {
+            // Status is 'downloading' - show segment progress and total downloaded size
             let text = `Downloaded ${download.progress.downloaded} of ${download.progress.total} segments`;
             
             // Add download speed if available
@@ -600,11 +606,13 @@ document.addEventListener('DOMContentLoaded', () => {
               text += ` • ${formatSpeed(download.progress.downloadSpeed)}`;
             }
             
-            // Add downloaded/total bytes if available
-            if (download.progress.downloadedBytes !== undefined && download.progress.totalBytes !== undefined) {
-              text += ` • ${formatBytes(download.progress.downloadedBytes)} / ${formatBytes(download.progress.totalBytes)}`;
-            } else if (download.progress.downloadedBytes !== undefined) {
+            // Always show total downloaded bytes (uncompressed size) during download
+            if (download.progress.downloadedBytes !== undefined) {
               text += ` • ${formatBytes(download.progress.downloadedBytes)}`;
+              // Also show total if available (for progress indication)
+              if (download.progress.totalBytes !== undefined && download.progress.totalBytes > download.progress.downloadedBytes) {
+                text += ` / ${formatBytes(download.progress.totalBytes)}`;
+              }
             }
             
             progressInfo.textContent = text;

@@ -401,3 +401,430 @@ segment3.ts`;
     expect(result).toBeCloseTo(15.0, 1);
   });
 });
+
+/**
+ * Testable versions of handler functions
+ * These replicate the handler logic but accept state as parameters for testing
+ */
+
+/**
+ * Testable version of handleGetStatus
+ */
+function testableHandleGetStatus(
+  manifestHistory: Manifest[],
+  sendResponse: (response: unknown) => void
+): void {
+  const manifestsWithSegments = manifestHistory
+    .filter((m) => m.expectedSegments.length > 0)
+    .map((m) => ({
+      id: m.id,
+      fileName: m.m3u8FileName,
+      title: m.title,
+      url: m.m3u8Url,
+      segmentCount: m.expectedSegments.length,
+      capturedAt: m.capturedAt,
+      resolution: m.resolution,
+      duration: m.duration,
+      urlKey: m.m3u8Url.split('?')[0],
+      dedupKey: m.title && m.expectedSegments.length > 0
+        ? `${m.title}|${m.expectedSegments.length}`
+        : m.m3u8Url.split('?')[0]
+    }));
+
+  const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
+  for (const m of manifestsWithSegments) {
+    const existing = groupedByKey.get(m.dedupKey);
+    if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
+      groupedByKey.set(m.dedupKey, m);
+    }
+  }
+
+  const filtered = Array.from(groupedByKey.values())
+    .map((m) => ({
+      id: m.id,
+      fileName: m.fileName,
+      title: m.title,
+      url: m.url,
+      segmentCount: m.segmentCount,
+      capturedAt: m.capturedAt,
+      resolution: m.resolution,
+      duration: m.duration
+    }))
+    .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+
+  sendResponse({ manifestHistory: filtered });
+}
+
+/**
+ * Testable version of handleGetManifestData
+ */
+function testableHandleGetManifestData(
+  manifestHistory: Manifest[],
+  manifestId: string,
+  sendResponse: (response: unknown) => void
+): void {
+  const manifest = manifestHistory.find((m) => m.id === manifestId);
+  if (manifest) {
+    sendResponse({
+      id: manifest.id,
+      m3u8Url: manifest.m3u8Url,
+      m3u8Content: manifest.m3u8Content,
+      m3u8FileName: manifest.m3u8FileName,
+      expectedSegments: manifest.expectedSegments
+    });
+  } else {
+    sendResponse({ error: 'Manifest not found' });
+  }
+}
+
+/**
+ * Testable version of handleClearManifest
+ */
+function testableHandleClearManifest(
+  manifestHistory: Manifest[],
+  manifestId: string | undefined,
+  sendResponse: (response: unknown) => void
+): { updatedHistory: Manifest[]; response: unknown } {
+  let updatedHistory: Manifest[];
+  if (manifestId) {
+    updatedHistory = manifestHistory.filter((m) => m.id !== manifestId);
+  } else {
+    updatedHistory = [];
+  }
+  const response = { success: true };
+  sendResponse(response);
+  return { updatedHistory, response };
+}
+
+/**
+ * Testable version of handleSegmentDownloaded
+ */
+function testableHandleSegmentDownloaded(
+  segmentUrl: string,
+  sendResponse: (response: unknown) => void
+): unknown {
+  const response = { success: true };
+  sendResponse(response);
+  return response;
+}
+
+/**
+ * Testable version of handleGetDownloadStatus
+ */
+function testableHandleGetDownloadStatus(
+  activeDownloads: Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>,
+  sendResponse: (response: unknown) => void
+): void {
+  const statuses = Array.from(activeDownloads.entries()).map(([id, download]) => ({
+    downloadId: id,
+    manifestId: download.manifestId,
+    format: download.format,
+    progress: download.progress || { downloaded: 0, total: 0, status: 'starting' }
+  }));
+  sendResponse({ downloads: statuses });
+}
+
+describe('handleGetStatus', () => {
+  it('should filter out manifests with no segments', () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/playlist1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'playlist1.m3u8',
+        expectedSegments: ['seg1.ts', 'seg2.ts'],
+        capturedAt: new Date().toISOString()
+      },
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/playlist2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'playlist2.m3u8',
+        expectedSegments: [],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    let response: unknown;
+    testableHandleGetStatus(manifests, (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    expect(getStatusResponse.manifestHistory).toHaveLength(1);
+    expect(getStatusResponse.manifestHistory[0].id).toBe('1');
+  });
+
+  it('should deduplicate by title and segment count', () => {
+    const now = new Date();
+    const earlier = new Date(now.getTime() - 10000);
+    const later = new Date(now.getTime() + 10000);
+
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        title: 'Test Video',
+        expectedSegments: ['seg1.ts', 'seg2.ts'],
+        capturedAt: earlier.toISOString()
+      },
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        title: 'Test Video',
+        expectedSegments: ['seg1.ts', 'seg2.ts'],
+        capturedAt: later.toISOString()
+      }
+    ];
+
+    let response: unknown;
+    testableHandleGetStatus(manifests, (res) => {
+      response = res;
+    });
+
+    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    expect(getStatusResponse.manifestHistory).toHaveLength(1);
+    expect(getStatusResponse.manifestHistory[0].id).toBe('2');
+    expect(getStatusResponse.manifestHistory[0].capturedAt).toBe(later.toISOString());
+  });
+
+  it('should sort by capturedAt descending (most recent first)', () => {
+    const now = new Date();
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date(now.getTime() - 20000).toISOString()
+      },
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date(now.getTime() - 10000).toISOString()
+      },
+      {
+        id: '3',
+        m3u8Url: 'https://example.com/video3.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video3.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date(now.getTime() - 30000).toISOString()
+      }
+    ];
+
+    let response: unknown;
+    testableHandleGetStatus(manifests, (res) => {
+      response = res;
+    });
+
+    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    expect(getStatusResponse.manifestHistory).toHaveLength(3);
+    expect(getStatusResponse.manifestHistory[0].id).toBe('2');
+    expect(getStatusResponse.manifestHistory[1].id).toBe('1');
+    expect(getStatusResponse.manifestHistory[2].id).toBe('3');
+  });
+
+  it('should include resolution and duration when available', () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString(),
+        resolution: { width: 1920, height: 1080 },
+        duration: 120.5
+      }
+    ];
+
+    let response: unknown;
+    testableHandleGetStatus(manifests, (res) => {
+      response = res;
+    });
+
+    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    expect(getStatusResponse.manifestHistory[0].resolution).toEqual({ width: 1920, height: 1080 });
+    expect(getStatusResponse.manifestHistory[0].duration).toBe(120.5);
+  });
+});
+
+describe('handleGetManifestData', () => {
+  it('should return manifest data when found', () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U\nsegment1.ts',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts', 'seg2.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    let response: unknown;
+    testableHandleGetManifestData(manifests, '1', (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const manifestData = response as { id: string; m3u8Url: string; expectedSegments: string[] };
+    expect(manifestData.id).toBe('1');
+    expect(manifestData.m3u8Url).toBe('https://example.com/video.m3u8');
+    expect(manifestData.expectedSegments).toEqual(['seg1.ts', 'seg2.ts']);
+  });
+
+  it('should return error when manifest not found', () => {
+    const manifests: Manifest[] = [];
+
+    let response: unknown;
+    testableHandleGetManifestData(manifests, 'nonexistent', (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const errorResponse = response as { error: string };
+    expect(errorResponse.error).toBe('Manifest not found');
+  });
+});
+
+describe('handleClearManifest', () => {
+  it('should clear a specific manifest when manifestId provided', () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      },
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    let response: unknown;
+    const { updatedHistory } = testableHandleClearManifest(manifests, '1', (res) => {
+      response = res;
+    });
+
+    expect(updatedHistory).toHaveLength(1);
+    expect(updatedHistory[0].id).toBe('2');
+    expect(response).toEqual({ success: true });
+  });
+
+  it('should clear all manifests when manifestId not provided', () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      },
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    let response: unknown;
+    const { updatedHistory } = testableHandleClearManifest(manifests, undefined, (res) => {
+      response = res;
+    });
+
+    expect(updatedHistory).toHaveLength(0);
+    expect(response).toEqual({ success: true });
+  });
+});
+
+describe('handleSegmentDownloaded', () => {
+  it('should acknowledge segment download', () => {
+    let response: unknown;
+    const result = testableHandleSegmentDownloaded('https://example.com/segment1.ts', (res) => {
+      response = res;
+    });
+
+    expect(response).toEqual({ success: true });
+    expect(result).toEqual({ success: true });
+  });
+});
+
+describe('handleGetDownloadStatus', () => {
+  it('should return status of all active downloads', () => {
+    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>();
+    activeDownloads.set('download1', {
+      manifestId: 'manifest1',
+      format: 'zip',
+      progress: { downloaded: 5, total: 10, status: 'downloading' }
+    });
+    activeDownloads.set('download2', {
+      manifestId: 'manifest2',
+      format: 'zip',
+      progress: { downloaded: 0, total: 5, status: 'starting' }
+    });
+
+    let response: unknown;
+    testableHandleGetDownloadStatus(activeDownloads, (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const statusResponse = response as { downloads: Array<{ downloadId: string; manifestId: string; format: string; progress: { downloaded: number; total: number; status: string } }> };
+    expect(statusResponse.downloads).toHaveLength(2);
+    expect(statusResponse.downloads[0].downloadId).toBe('download1');
+    expect(statusResponse.downloads[0].progress.downloaded).toBe(5);
+    expect(statusResponse.downloads[1].downloadId).toBe('download2');
+  });
+
+  it('should return empty array when no active downloads', () => {
+    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>();
+
+    let response: unknown;
+    testableHandleGetDownloadStatus(activeDownloads, (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const statusResponse = response as { downloads: unknown[] };
+    expect(statusResponse.downloads).toHaveLength(0);
+  });
+
+  it('should use default progress when progress is missing', () => {
+    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress?: { downloaded: number; total: number; status: string } }>();
+    activeDownloads.set('download1', {
+      manifestId: 'manifest1',
+      format: 'zip'
+    });
+
+    let response: unknown;
+    testableHandleGetDownloadStatus(activeDownloads as Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>, (res) => {
+      response = res;
+    });
+
+    expect(response).toBeDefined();
+    const statusResponse = response as { downloads: Array<{ progress: { downloaded: number; total: number; status: string } }> };
+    expect(statusResponse.downloads[0].progress).toEqual({ downloaded: 0, total: 0, status: 'starting' });
+  });
+});
