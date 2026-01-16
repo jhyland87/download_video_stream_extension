@@ -761,7 +761,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Modify m3u8 content to use local filenames
   const modifiedM3U8Content = modifyM3U8ForLocalFiles(manifest.m3u8Content, manifest.m3u8Url);
 
-  // Add m3u8 file
+  // Add m3u8 file (text file, no need for binary option)
   const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
   zip.file(m3u8FileName, modifiedM3U8Content);
 
@@ -860,8 +860,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw new Error('Could not extract filename from init segment URL');
         }
 
-        // JSZip accepts Blob directly according to official types
-        zip.file(fileName, blob);
+        // Convert blob to ArrayBuffer for better memory efficiency with large files
+        const arrayBuffer = await blob.arrayBuffer();
+        zip.file(fileName, arrayBuffer, { binary: true });
         downloaded++;
 
         // Calculate download speed
@@ -949,8 +950,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw new Error('Could not extract filename from URL');
         }
 
-        // JSZip accepts Blob directly according to official types
-        zip.file(fileName, blob);
+        // Convert blob to ArrayBuffer for better memory efficiency with large files
+        const arrayBuffer = await blob.arrayBuffer();
+        zip.file(fileName, arrayBuffer, { binary: true });
         downloaded++;
 
         // Calculate download speed
@@ -1033,8 +1035,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw new Error('Could not extract filename from init segment URL');
         }
 
-        // JSZip accepts Blob directly according to official types
-        zip.file(fileName, blob);
+        // Convert blob to ArrayBuffer for better memory efficiency with large files
+        const arrayBuffer = await blob.arrayBuffer();
+        zip.file(fileName, arrayBuffer, { binary: true });
         downloaded++;
 
         // Calculate download speed
@@ -1125,8 +1128,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             throw new Error('Could not extract filename from URL');
           }
 
-          // JSZip accepts Blob directly according to official types
-          zip.file(fileName, blob);
+          // Convert blob to ArrayBuffer for better memory efficiency with large files
+          const arrayBuffer = await blob.arrayBuffer();
+          zip.file(fileName, arrayBuffer, { binary: true });
           downloaded++;
 
           // Calculate download speed
