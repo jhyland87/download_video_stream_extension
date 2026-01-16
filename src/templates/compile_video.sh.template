@@ -4,7 +4,7 @@
 
 MANIFEST_FILE="{{MANIFEST_FILE}}"
 OUTPUT_FILE="{{OUTPUT_FILE}}"
-
+EXT_MAP_FILE=$(echo "${MANIFEST_FILE}" | grep 'EXT-X-MAP:URI' | awk -F= '{print $2}' | tr -d '"')
 
 function _error {
 	echo "ERROR: ${1:-Unknown error occurred}"
@@ -27,7 +27,13 @@ ffprobe -v error "${OUTPUT_FILE}" || _error "ffprobe check failed"
 
 echo "Cleaning up segments..."
 rm -f *.ts *.m4s
+rm -f "${MANIFEST_FILE}"
+[[ -e "${EXT_MAP_FILE}" ]] && rm -f "${EXT_MAP_FILE}"
 
 echo
 echo "DONE"
+echo
+echo "Deleting self..."
+sleep 2
 
+rm -v $0

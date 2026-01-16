@@ -61,9 +61,8 @@ chrome.runtime.onMessage.addListener((
 
   if (message.action === 'getStatus') {
     // Filter out manifests with no segments and remove duplicates
-    // Group by URL (without query params) and keep only the most recent one
-    const seen = new Map<string, ManifestSummary & { urlKey: string }>();
-    const filtered = manifestHistory
+    // Group by URL (without query params) OR (title + segment count) and keep only the most recent one
+    const manifestsWithSegments = manifestHistory
       .filter((m) => m.expectedSegments.length > 0) // Only include manifests with segments
       .map((m) => ({
         id: m.id,
@@ -74,21 +73,23 @@ chrome.runtime.onMessage.addListener((
         capturedAt: m.capturedAt,
         resolution: m.resolution,
         duration: m.duration,
-        urlKey: m.m3u8Url.split('?')[0] // URL without query params for deduplication
-      }))
-      .filter((m) => {
-        // Keep only the most recent manifest for each unique URL
-        const existing = seen.get(m.urlKey);
-        if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
-          if (existing) {
-            // Remove the older one
-            seen.delete(m.urlKey);
-          }
-          seen.set(m.urlKey, m);
-          return true;
-        }
-        return false;
-      })
+        urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
+        dedupKey: m.title && m.expectedSegments.length > 0
+          ? `${m.title}|${m.expectedSegments.length}` // Title + segment count for deduplication
+          : m.m3u8Url.split('?')[0] // Fallback to URL if no title
+      }));
+
+    // Group by dedupKey and keep only the most recent one for each group
+    const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
+    for (const m of manifestsWithSegments) {
+      const existing = groupedByKey.get(m.dedupKey);
+      if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
+        groupedByKey.set(m.dedupKey, m);
+      }
+    }
+
+    // Convert map values to array and remove helper keys
+    const filtered = Array.from(groupedByKey.values())
       .map((m) => ({
         id: m.id,
         fileName: m.fileName,
@@ -446,18 +447,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
       console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
     }
 
-    // Double-check we don't already have this (race condition protection)
-    const duplicateCheck = manifestHistory.find((m) => {
-      const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
-      return existingUrlWithoutQuery === urlWithoutQuery;
-    });
-
-    if (duplicateCheck) {
-      console.log(`[Stream Video Saver] Duplicate detected during processing, skipping: ${fileName}`);
-      return;
-    }
-
-    // Try to get video title from the page
+    // Try to get video title from the page (needed for duplicate detection)
     let title: string | undefined;
 
     // First, try to get video title from content script
@@ -486,6 +476,49 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.log(`[Stream Video Saver] Could not get tab title: ${errorMessage}`);
       }
+    }
+
+    // Check for duplicates: same URL OR (same title AND same segment count)
+    // This check happens after title is fetched so we can properly detect title+segment duplicates
+    const duplicateCheck = manifestHistory.find((m) => {
+      const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
+      const urlMatch = existingUrlWithoutQuery === urlWithoutQuery;
+
+      // If we have a title and segment count, also check for title + segment match
+      if (title && segmentUrls.length > 0) {
+        const titleMatch = m.title === title;
+        const segmentCountMatch = m.expectedSegments.length === segmentUrls.length;
+        return urlMatch || (titleMatch && segmentCountMatch);
+      }
+
+      // Fallback to URL match only if no title
+      return urlMatch;
+    });
+
+    if (duplicateCheck) {
+      // Update existing manifest with newer data (keep most recent)
+      console.log(`[Stream Video Saver] Duplicate detected, updating existing manifest: ${fileName}`);
+      duplicateCheck.m3u8Url = url; // Update URL in case query params changed
+      duplicateCheck.m3u8Content = text; // Update content
+      duplicateCheck.m3u8FileName = fileName; // Update filename
+      duplicateCheck.title = title || duplicateCheck.title; // Update title if we have a better one
+      duplicateCheck.expectedSegments = segmentUrls; // Update segments
+      duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
+      duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
+      duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
+
+      // Notify popup that manifest was updated
+      chrome.runtime.sendMessage({
+        action: 'manifestCaptured',
+        manifestId: duplicateCheck.id,
+        fileName: fileName,
+        title: title,
+        segmentCount: segmentUrls.length
+      } as ExtensionMessage).catch(() => {
+        // Ignore if no listeners
+      });
+
+      return;
     }
 
     // Create manifest object and add to history
@@ -680,12 +713,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Total includes both regular segments and init segments
   const total = segmentUrls.length + initSegmentUrls.length;
   let downloaded = 0;
+  let downloadedBytes = 0;
+  let totalBytes: number | undefined;
+  let downloadStartTime = Date.now();
+  let lastUpdateTime = downloadStartTime;
+  let lastDownloadedBytes = 0;
 
   // Update initial progress
   notifyDownloadProgress(downloadId, {
     downloaded: 0,
     total,
-    status: 'downloading'
+    status: 'downloading',
+    downloadedBytes: 0,
+    totalBytes: undefined,
+    downloadSpeed: 0
   });
 
   // Download initialization segments first (if any)
@@ -702,6 +743,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw new Error(`HTTP ${response.status}`);
         }
         const blob = await response.blob();
+        const blobSize = blob.size;
+        downloadedBytes += blobSize;
 
         // Extract filename
         let fileName: string;
@@ -727,15 +770,36 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         zip.file(fileName, blob);
         downloaded++;
 
+        // Calculate download speed
+        const now = Date.now();
+        const timeDelta = (now - lastUpdateTime) / 1000; // seconds
+        let downloadSpeed = 0;
+        if (timeDelta > 0) {
+          const bytesDelta = downloadedBytes - lastDownloadedBytes;
+          downloadSpeed = bytesDelta / timeDelta; // bytes per second
+          lastUpdateTime = now;
+          lastDownloadedBytes = downloadedBytes;
+        }
+
         // Update progress
         const download = activeDownloads.get(downloadId);
         if (download) {
-          download.progress = { downloaded, total, status: 'downloading' };
+          download.progress = {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          };
         }
         notifyDownloadProgress(downloadId, {
           downloaded,
           total,
-          status: 'downloading'
+          status: 'downloading',
+          downloadedBytes,
+          totalBytes,
+          downloadSpeed
         });
 
         console.log(`[Stream Video Saver] Downloaded init segment: ${fileName}`);
@@ -768,6 +832,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw new Error(`HTTP ${response.status}`);
         }
         const blob = await response.blob();
+        const blobSize = blob.size;
+        downloadedBytes += blobSize;
 
         // Extract filename
         let fileName: string;
@@ -793,15 +859,36 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         zip.file(fileName, blob);
         downloaded++;
 
+        // Calculate download speed
+        const now = Date.now();
+        const timeDelta = (now - lastUpdateTime) / 1000; // seconds
+        let downloadSpeed = 0;
+        if (timeDelta > 0) {
+          const bytesDelta = downloadedBytes - lastDownloadedBytes;
+          downloadSpeed = bytesDelta / timeDelta; // bytes per second
+          lastUpdateTime = now;
+          lastDownloadedBytes = downloadedBytes;
+        }
+
         // Update progress
         const download = activeDownloads.get(downloadId);
         if (download) {
-          download.progress = { downloaded, total, status: 'downloading' };
+          download.progress = {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          };
         }
         notifyDownloadProgress(downloadId, {
           downloaded,
           total,
-          status: 'downloading'
+          status: 'downloading',
+          downloadedBytes,
+          totalBytes,
+          downloadSpeed
         });
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
@@ -818,16 +905,34 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     throw new Error('Download cancelled');
   }
 
+  // Calculate total bytes downloaded (approximation based on downloaded blobs)
+  totalBytes = downloadedBytes;
+
   // Generate zip file - notify user that ZIP creation is starting
   notifyDownloadProgress(downloadId, {
     downloaded,
     total,
-    status: 'creating_zip'
+    status: 'creating_zip',
+    downloadedBytes,
+    totalBytes,
+    downloadSpeed: 0
   });
 
   // Generate ZIP as ArrayBuffer (service workers don't support Blob/URL.createObjectURL)
   // This can take a while for large files
   const zipArrayBuffer = await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+  const zipSize = zipArrayBuffer.byteLength;
+
+  // Update progress with ZIP size
+  notifyDownloadProgress(downloadId, {
+    downloaded,
+    total,
+    status: 'creating_zip',
+    downloadedBytes,
+    totalBytes,
+    downloadSpeed: 0,
+    zipSize
+  });
 
   // Check if cancelled after ZIP generation
   if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
@@ -888,7 +993,11 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       notifyDownloadProgress(downloadId, {
         downloaded,
         total,
-        status: 'complete'
+        status: 'complete',
+        downloadedBytes,
+        totalBytes,
+        downloadSpeed: 0,
+        zipSize
       });
       // Clean up after a short delay
       setTimeout(() => {

@@ -28,6 +28,28 @@ import {
 // CRITICAL: This should appear in console immediately when script loads
 console.log('[Stream Video Saver] popup.ts loaded - script is executing');
 
+/**
+ * Formats bytes into a human-readable string (B, KB, MB, GB).
+ * @param bytes - The number of bytes to format
+ * @returns A formatted string (e.g., "1.5 MB")
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+/**
+ * Formats download speed into a human-readable string.
+ * @param bytesPerSecond - The download speed in bytes per second
+ * @returns A formatted string (e.g., "1.5 MB/s")
+ */
+function formatSpeed(bytesPerSecond: number): string {
+  return formatBytes(bytesPerSecond) + '/s';
+}
+
 // Error handler to catch script loading errors
 window.addEventListener('error', (e: ErrorEvent) => {
   console.error(`[Stream Video Saver] Script error: ${e.message} in ${e.filename ?? 'unknown'}:${e.lineno ?? 'unknown'}`);
@@ -397,11 +419,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (progressMessage.status === 'creating_zip') {
         if (isHTMLElement(progressInfo)) {
-          progressInfo.textContent = 'Creating ZIP file...';
+          let text = 'Creating ZIP file...';
+          if (progressMessage.totalBytes) {
+            text += ` (${formatBytes(progressMessage.totalBytes)})`;
+          }
+          if (progressMessage.zipSize) {
+            text = `Creating ZIP file... (${formatBytes(progressMessage.zipSize)})`;
+          }
+          progressInfo.textContent = text;
         }
       } else if (progressMessage.status === 'complete') {
         if (isHTMLElement(progressInfo)) {
-          progressInfo.textContent = 'Download complete!';
+          let text = 'Download complete!';
+          if (progressMessage.totalBytes) {
+            text += ` • ${formatBytes(progressMessage.totalBytes)}`;
+          }
+          if (progressMessage.zipSize) {
+            text += ` • ZIP: ${formatBytes(progressMessage.zipSize)}`;
+          }
+          progressInfo.textContent = text;
         }
         if (isHTMLDivElement(progressDiv)) {
           setTimeout(() => {
@@ -421,7 +457,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         if (isHTMLElement(progressInfo)) {
-          progressInfo.textContent = `Downloaded ${progressMessage.downloaded} of ${progressMessage.total} segments`;
+          let text = `Downloaded ${progressMessage.downloaded} of ${progressMessage.total} segments`;
+          
+          // Add download speed if available
+          if (progressMessage.downloadSpeed && progressMessage.downloadSpeed > 0) {
+            text += ` • ${formatSpeed(progressMessage.downloadSpeed)}`;
+          }
+          
+          // Add downloaded/total bytes if available
+          if (progressMessage.downloadedBytes !== undefined && progressMessage.totalBytes !== undefined) {
+            text += ` • ${formatBytes(progressMessage.downloadedBytes)} / ${formatBytes(progressMessage.totalBytes)}`;
+          } else if (progressMessage.downloadedBytes !== undefined) {
+            text += ` • ${formatBytes(progressMessage.downloadedBytes)}`;
+          }
+          
+          progressInfo.textContent = text;
         }
       }
       if (isHTMLDivElement(progressDiv)) {
@@ -525,9 +575,39 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (isHTMLElement(progressInfo)) {
           if (download.progress.status === 'creating_zip') {
-            progressInfo.textContent = 'Creating ZIP file...';
+            let text = 'Creating ZIP file...';
+            if (download.progress.totalBytes) {
+              text += ` (${formatBytes(download.progress.totalBytes)})`;
+            }
+            if (download.progress.zipSize) {
+              text = `Creating ZIP file... (${formatBytes(download.progress.zipSize)})`;
+            }
+            progressInfo.textContent = text;
+          } else if (download.progress.status === 'complete') {
+            let text = 'Download complete!';
+            if (download.progress.totalBytes) {
+              text += ` • ${formatBytes(download.progress.totalBytes)}`;
+            }
+            if (download.progress.zipSize) {
+              text += ` • ZIP: ${formatBytes(download.progress.zipSize)}`;
+            }
+            progressInfo.textContent = text;
           } else {
-            progressInfo.textContent = `Downloaded ${download.progress.downloaded} of ${download.progress.total} segments`;
+            let text = `Downloaded ${download.progress.downloaded} of ${download.progress.total} segments`;
+            
+            // Add download speed if available
+            if (download.progress.downloadSpeed && download.progress.downloadSpeed > 0) {
+              text += ` • ${formatSpeed(download.progress.downloadSpeed)}`;
+            }
+            
+            // Add downloaded/total bytes if available
+            if (download.progress.downloadedBytes !== undefined && download.progress.totalBytes !== undefined) {
+              text += ` • ${formatBytes(download.progress.downloadedBytes)} / ${formatBytes(download.progress.totalBytes)}`;
+            } else if (download.progress.downloadedBytes !== undefined) {
+              text += ` • ${formatBytes(download.progress.downloadedBytes)}`;
+            }
+            
+            progressInfo.textContent = text;
           }
         }
         if (isHTMLButtonElement(cancelDownloadBtn) && download.progress.status !== 'complete' && download.progress.status !== 'cancelled') {

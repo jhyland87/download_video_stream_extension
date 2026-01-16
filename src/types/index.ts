@@ -53,9 +53,13 @@ export type DownloadStatus = 'starting' | 'downloading' | 'creating_zip' | 'comp
  * Download progress information
  */
 export interface DownloadProgress {
-  downloaded: number;
-  total: number;
+  downloaded: number; // Number of segments downloaded
+  total: number; // Total number of segments
   status: DownloadStatus;
+  downloadedBytes?: number; // Total bytes downloaded
+  totalBytes?: number; // Total bytes to download
+  downloadSpeed?: number; // Download speed in bytes per second
+  zipSize?: number; // ZIP file size in bytes (after generation)
 }
 
 /**
@@ -147,6 +151,10 @@ export interface DownloadProgressMessage extends BaseMessage {
   downloaded: number;
   total: number;
   status: DownloadStatus;
+  downloadedBytes?: number; // Total bytes downloaded
+  totalBytes?: number; // Total bytes to download
+  downloadSpeed?: number; // Download speed in bytes per second
+  zipSize?: number; // ZIP file size in bytes (after generation)
 }
 
 /**
