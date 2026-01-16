@@ -458,23 +458,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         // Status is 'downloading' - show segment progress and total downloaded size
+        // Format: "Segments: {current}/{total} {speed} {Size}"
+        // Use fixed-width format to prevent resizing as values change
         if (isHTMLElement(progressInfo)) {
-          let text = `Downloaded ${progressMessage.downloaded} of ${progressMessage.total} segments`;
+          const segments = `${progressMessage.downloaded}/${progressMessage.total}`.padEnd(10);
+          const speed = progressMessage.downloadSpeed && progressMessage.downloadSpeed > 0 
+            ? formatSpeed(progressMessage.downloadSpeed).padEnd(12)
+            : '            '; // 12 spaces as placeholder
+          const size = progressMessage.downloadedBytes !== undefined
+            ? formatBytes(progressMessage.downloadedBytes).padEnd(12)
+            : '            '; // 12 spaces as placeholder
           
-          // Add download speed if available
-          if (progressMessage.downloadSpeed && progressMessage.downloadSpeed > 0) {
-            text += ` • ${formatSpeed(progressMessage.downloadSpeed)}`;
-          }
-          
-          // Always show total downloaded bytes (uncompressed size) during download
-          if (progressMessage.downloadedBytes !== undefined) {
-            text += ` • ${formatBytes(progressMessage.downloadedBytes)}`;
-            // Also show total if available (for progress indication)
-            if (progressMessage.totalBytes !== undefined && progressMessage.totalBytes > progressMessage.downloadedBytes) {
-              text += ` / ${formatBytes(progressMessage.totalBytes)}`;
-            }
-          }
-          
+          const text = `Segments: ${segments} ${speed} ${size}`.trimEnd();
           progressInfo.textContent = text;
         }
       }
@@ -599,22 +594,17 @@ document.addEventListener('DOMContentLoaded', () => {
             progressInfo.textContent = text;
           } else {
             // Status is 'downloading' - show segment progress and total downloaded size
-            let text = `Downloaded ${download.progress.downloaded} of ${download.progress.total} segments`;
+            // Format: "Segments: {current}/{total} {speed} {Size}"
+            // Use fixed-width format to prevent resizing as values change
+            const segments = `${download.progress.downloaded}/${download.progress.total}`.padEnd(10);
+            const speed = download.progress.downloadSpeed && download.progress.downloadSpeed > 0 
+              ? formatSpeed(download.progress.downloadSpeed).padEnd(12)
+              : '            '; // 12 spaces as placeholder
+            const size = download.progress.downloadedBytes !== undefined
+              ? formatBytes(download.progress.downloadedBytes).padEnd(12)
+              : '            '; // 12 spaces as placeholder
             
-            // Add download speed if available
-            if (download.progress.downloadSpeed && download.progress.downloadSpeed > 0) {
-              text += ` • ${formatSpeed(download.progress.downloadSpeed)}`;
-            }
-            
-            // Always show total downloaded bytes (uncompressed size) during download
-            if (download.progress.downloadedBytes !== undefined) {
-              text += ` • ${formatBytes(download.progress.downloadedBytes)}`;
-              // Also show total if available (for progress indication)
-              if (download.progress.totalBytes !== undefined && download.progress.totalBytes > download.progress.downloadedBytes) {
-                text += ` / ${formatBytes(download.progress.totalBytes)}`;
-              }
-            }
-            
+            const text = `Segments: ${segments} ${speed} ${size}`.trimEnd();
             progressInfo.textContent = text;
           }
         }
