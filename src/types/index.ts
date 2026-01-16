@@ -199,6 +199,17 @@ export interface M3U8ResponseCapturedMessage extends BaseMessage {
 }
 
 /**
+ * M3U8 fetch error message (from background script)
+ */
+export interface M3U8FetchErrorMessage extends BaseMessage {
+  action: 'm3u8FetchError';
+  url: string;
+  status: number;
+  statusText: string;
+  error: string;
+}
+
+/**
  * Union type for all messages
  */
 export type ExtensionMessage =
@@ -212,7 +223,8 @@ export type ExtensionMessage =
   | DownloadErrorMessage
   | ManifestCapturedMessage
   | SegmentDownloadedMessage
-  | M3U8ResponseCapturedMessage;
+  | M3U8ResponseCapturedMessage
+  | M3U8FetchErrorMessage;
 
 /**
  * Response for getStatus action

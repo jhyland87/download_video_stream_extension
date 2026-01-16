@@ -272,15 +272,21 @@ async function processM3U8Content(
   text: string,
   details: chrome.webRequest.WebRequestBodyDetails & { tabId?: number }
 ): Promise<void> {
-  const urlWithoutQuery = url.split('?')[0];
+  // Extract filename for display
+  let fileName: string;
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/').filter(part => part.length > 0);
+    fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
+  } catch (error) {
+    // Fallback for invalid URLs
+    const urlWithoutQuery = url.split('?')[0];
+    const pathParts = urlWithoutQuery.split('/').filter(part => part.length > 0);
+    fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
+  }
 
   console.log(`[Stream Video Saver] M3U8 content length: ${text.length} chars`);
   console.log(`[Stream Video Saver] M3U8 content preview (first 500 chars): ${text.substring(0, 500)}`);
-
-  // Extract filename for display
-  const urlObj = new URL(url.split('?')[0]);
-  const pathParts = urlObj.pathname.split('/');
-  const fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
 
   // Only process VOD (Video On Demand) playlists - skip master playlists and live streams
   if (!text.includes('#EXT-X-PLAYLIST-TYPE:VOD')) {
@@ -343,6 +349,7 @@ async function processM3U8Content(
 
   // Check for duplicates: same URL OR (same title AND same segment count)
   // This check happens after title is fetched so we can properly detect title+segment duplicates
+  const urlWithoutQuery = url.split('?')[0];
   const duplicateCheck = manifestHistory.find((m) => {
     const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
     const urlMatch = existingUrlWithoutQuery === urlWithoutQuery;
@@ -474,6 +481,125 @@ chrome.runtime.onMessage.addListener((
       return false;
   }
 });
+
+/**
+ * Sanitizes a filename by removing non-ASCII characters and invalid filesystem characters.
+ * Keeps only ASCII alphanumeric, dots, hyphens, and underscores.
+ * @param filename - The filename to sanitize
+ * @returns Sanitized filename with only ASCII characters
+ */
+function sanitizeSegmentFilename(filename: string): string {
+  // Remove non-ASCII characters (keep only ASCII: 0x00-0x7F)
+  // Also remove invalid filesystem characters: < > : " / \ | ? * and control characters
+  return filename
+    .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII characters
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remove invalid filesystem characters
+    .replace(/\s+/g, '_') // Replace whitespace with underscore
+    .replace(/_{2,}/g, '_') // Replace multiple underscores with single underscore
+    .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+}
+
+/**
+ * Extracts just the filename from a URL (without folder path).
+ * Uses URL constructor for consistent parsing.
+ * Sanitizes the filename to remove non-ASCII characters.
+ * @param url - The URL to extract filename from
+ * @param defaultName - Default filename if extraction fails (e.g., 'segment.ts' or 'init.mp4')
+ * @returns Just the filename, sanitized to ASCII only (e.g., 'segment.ts', 'init.mp4')
+ */
+function extractBaseFilename(url: string, defaultName: string = 'segment.ts'): string {
+  let filename: string;
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/').filter(part => part.length > 0);
+    filename = pathParts[pathParts.length - 1] || defaultName;
+  } catch (error) {
+    // If URL constructor fails (e.g., relative URL without base), fall back to manual parsing
+    const urlWithoutQuery = url.split('?')[0];
+    const parts = urlWithoutQuery.split('/').filter(part => part.length > 0);
+    filename = parts[parts.length - 1] || defaultName;
+  }
+  // Remove query parameters if any
+  filename = filename.split('?')[0];
+  // Sanitize to remove non-ASCII characters
+  const sanitized = sanitizeSegmentFilename(filename);
+  // If sanitization removed everything, use default
+  return sanitized || defaultName;
+}
+
+/**
+ * Extracts folder name and filename from a URL.
+ * Sanitizes both to remove non-ASCII characters.
+ * @param url - The URL to extract from
+ * @returns Object with folderName (may be empty) and segmentName, both sanitized to ASCII only
+ */
+function extractFolderAndFilename(url: string): { folderName: string; segmentName: string; defaultName?: string } {
+  const defaultName = 'segment.ts';
+  let segmentName: string;
+  let folderName: string;
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/').filter(part => part.length > 0);
+    segmentName = pathParts[pathParts.length - 1] || defaultName;
+    folderName = pathParts.length > 1 ? pathParts[pathParts.length - 2] : '';
+  } catch (error) {
+    // Fallback for invalid URLs
+    const urlWithoutQuery = url.split('?')[0];
+    const parts = urlWithoutQuery.split('/').filter(part => part.length > 0);
+    segmentName = parts[parts.length - 1] || defaultName;
+    folderName = parts.length > 1 ? parts[parts.length - 2] : '';
+  }
+  // Remove query parameters if any
+  segmentName = segmentName.split('?')[0];
+  folderName = folderName.split('?')[0];
+  // Sanitize both to remove non-ASCII characters
+  return {
+    folderName: sanitizeSegmentFilename(folderName),
+    segmentName: sanitizeSegmentFilename(segmentName) || defaultName
+  };
+}
+
+/**
+ * Creates a mapping from segment URLs to unique filenames.
+ * Only applies unique naming when filenames are duplicated (same filename, different paths).
+ * @param segmentUrls - Array of segment URLs
+ * @param defaultName - Default filename if extraction fails
+ * @returns Map from URL to unique filename
+ */
+function createUrlToFilenameMap(segmentUrls: string[], defaultName: string = 'segment.ts'): Map<string, string> {
+  const urlToFilename = new Map<string, string>();
+  const filenameCounts = new Map<string, number>();
+  const filenameToUrls = new Map<string, string[]>();
+
+  // First pass: extract base filenames and count occurrences
+  for (const url of segmentUrls) {
+    const baseFilename = extractBaseFilename(url, defaultName);
+    urlToFilename.set(url, baseFilename);
+
+    if (!filenameCounts.has(baseFilename)) {
+      filenameCounts.set(baseFilename, 0);
+      filenameToUrls.set(baseFilename, []);
+    }
+    filenameCounts.set(baseFilename, filenameCounts.get(baseFilename)! + 1);
+    filenameToUrls.get(baseFilename)!.push(url);
+  }
+
+  // Second pass: only for duplicates, create unique filenames using folder name
+  for (const [filename, urls] of filenameToUrls.entries()) {
+    if (urls.length > 1) {
+      // This filename appears multiple times - need unique naming
+      for (const url of urls) {
+        const { folderName, segmentName } = extractFolderAndFilename(url);
+        const uniqueFilename = folderName ? `${folderName}__${segmentName}` : segmentName;
+        urlToFilename.set(url, uniqueFilename);
+        console.log(`[Stream Video Saver] Duplicate filename detected: ${filename} -> ${uniqueFilename}`);
+      }
+    }
+    // If filename is unique, keep it as-is (already set in first pass)
+  }
+
+  return urlToFilename;
+}
 
 /**
  * Parses an m3u8 playlist file and extracts segment URLs.
@@ -769,13 +895,21 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     const response = await fetch(url, fetchOptions);
 
     if (!response.ok) {
-      console.error(`[Stream Video Saver] Failed to fetch m3u8: ${response.status} ${response.statusText}`);
+      const errorMsg = `Failed to fetch m3u8 file: ${response.status} ${response.statusText}`;
+      console.error(`[Stream Video Saver] ${errorMsg}`);
 
-      // If we got a 403 and didn't use headers, log a warning
-      if (response.status === 403 && Object.keys(headers).length === 0) {
-        console.warn(`[Stream Video Saver] Got 403 Forbidden. Request headers may be needed.`);
-      }
+      // Show error to user - send error message to popup if it's open
+      chrome.runtime.sendMessage({
+        action: 'm3u8FetchError',
+        url: url,
+        status: response.status,
+        statusText: response.statusText,
+        error: errorMsg
+      } as ExtensionMessage).catch(() => {
+        // Ignore if no listeners (popup might not be open)
+      });
 
+      // Don't try anything else - just return
       return;
     }
 
@@ -785,7 +919,22 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     await processM3U8Content(url, text, details);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Stream Video Saver] Error fetching m3u8: ${errorMessage}`, error);
+    const errorMsg = `Error fetching m3u8 file: ${errorMessage}`;
+    console.error(`[Stream Video Saver] ${errorMsg}`, error);
+
+    // Show error to user - send error message to popup if it's open
+    chrome.runtime.sendMessage({
+      action: 'm3u8FetchError',
+      url: url,
+      status: 0,
+      statusText: 'Network Error',
+      error: errorMsg
+    } as ExtensionMessage).catch(() => {
+      // Ignore if no listeners (popup might not be open)
+    });
+
+    // Don't try anything else - just return
+    return;
   }
 }
 
@@ -896,12 +1045,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   const zip = new JSZip();
 
-  // Modify m3u8 content to use local filenames
-  const modifiedM3U8Content = modifyM3U8ForLocalFiles(manifest.m3u8Content, manifest.m3u8Url);
-
-  // Add m3u8 file (text file, no need for binary option)
+  // Extract m3u8 filename (used for ZIP file and bash script)
   const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
-  zip.file(m3u8FileName, modifiedM3U8Content);
 
   // Create and add bash script for converting to MP4
   const scriptTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -937,6 +1082,28 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Parse m3u8 to get initialization segment URLs from #EXT-X-MAP tags
   const initSegmentUrls = parseInitSegments(manifest.m3u8Content, manifest.m3u8Url);
   console.log(`[Stream Video Saver] Found ${initSegmentUrls.length} initialization segment(s)`);
+
+  // Create URL-to-filename mappings for both regular segments and init segments
+  // Only applies unique naming when filenames are duplicated
+  const segmentUrlToFilename = createUrlToFilenameMap(segmentUrls, 'segment.ts');
+  const initSegmentUrlToFilename = createUrlToFilenameMap(initSegmentUrls, 'init.mp4');
+
+  // Log mapping for debugging
+  console.log(`[Stream Video Saver] Created mapping for ${segmentUrlToFilename.size} regular segments and ${initSegmentUrlToFilename.size} init segments`);
+  if (segmentUrls.length > 0) {
+    const firstUrl = segmentUrls[0];
+    const firstFilename = segmentUrlToFilename.get(firstUrl);
+    console.log(`[Stream Video Saver] Sample mapping: ${firstUrl.substring(0, 80)}... -> ${firstFilename}`);
+  }
+
+  // Combine mappings for m3u8 modification
+  const allUrlToFilename = new Map<string, string>([...segmentUrlToFilename, ...initSegmentUrlToFilename]);
+
+  // Now modify m3u8 content to use the mapped filenames
+  const modifiedM3U8Content = modifyM3U8ForLocalFiles(manifest.m3u8Content, manifest.m3u8Url, allUrlToFilename);
+
+  // Add m3u8 file to ZIP
+  zip.file(m3u8FileName, modifiedM3U8Content);
 
   // Total includes both regular segments and init segments
   const total = segmentUrls.length + initSegmentUrls.length;
@@ -978,29 +1145,23 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         const blobSize = blob.size;
         downloadedBytes += blobSize;
 
-        // Extract filename
-        let fileName: string;
-        try {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            const urlObj = new URL(url);
-            const pathParts = urlObj.pathname.split('/');
-            fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'init.mp4';
-          } else {
-            const urlParts = url.split('?')[0].split('/');
-            fileName = urlParts[urlParts.length - 1] || 'init.mp4';
-          }
-          fileName = fileName.split('?')[0];
-        } catch (error) {
-          fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'init.mp4';
+        // Use the filename from the mapping (handles duplicates automatically)
+        const fileName = initSegmentUrlToFilename.get(url);
+        if (!fileName) {
+          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for init segment URL: ${url}`);
+          throw new Error(`Could not get filename from init segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
-        if (!fileName) {
-          throw new Error('Could not extract filename from init segment URL');
+        // Validate filename is not empty
+        if (!fileName || fileName.trim().length === 0) {
+          console.error(`[Stream Video Saver] ERROR: Empty filename for init segment URL: ${url}`);
+          throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
+        console.log(`[Stream Video Saver] Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1068,29 +1229,23 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         const blobSize = blob.size;
         downloadedBytes += blobSize;
 
-        // Extract filename
-        let fileName: string;
-        try {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            const urlObj = new URL(url);
-            const pathParts = urlObj.pathname.split('/');
-            fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'segment.ts';
-          } else {
-            const urlParts = url.split('?')[0].split('/');
-            fileName = urlParts[urlParts.length - 1] || 'segment.ts';
-          }
-          fileName = fileName.split('?')[0];
-        } catch (error) {
-          fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'segment.ts';
+        // Use the filename from the mapping (handles duplicates automatically)
+        const fileName = segmentUrlToFilename.get(url);
+        if (!fileName) {
+          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for segment URL: ${url}`);
+          throw new Error(`Could not get filename from segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
-        if (!fileName) {
-          throw new Error('Could not extract filename from URL');
+        // Validate filename is not empty
+        if (!fileName || fileName.trim().length === 0) {
+          console.error(`[Stream Video Saver] ERROR: Empty filename for segment URL: ${url}`);
+          throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
+        console.log(`[Stream Video Saver] Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1153,29 +1308,23 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         const blobSize = blob.size;
         downloadedBytes += blobSize;
 
-        // Extract filename
-        let fileName: string;
-        try {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            const urlObj = new URL(url);
-            const pathParts = urlObj.pathname.split('/');
-            fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'init.mp4';
-          } else {
-            const urlParts = url.split('?')[0].split('/');
-            fileName = urlParts[urlParts.length - 1] || 'init.mp4';
-          }
-          fileName = fileName.split('?')[0];
-        } catch (error) {
-          fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'init.mp4';
+        // Use the filename from the mapping (handles duplicates automatically)
+        const fileName = initSegmentUrlToFilename.get(url);
+        if (!fileName) {
+          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for init segment URL: ${url}`);
+          throw new Error(`Could not get filename from init segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
-        if (!fileName) {
-          throw new Error('Could not extract filename from init segment URL');
+        // Validate filename is not empty
+        if (!fileName || fileName.trim().length === 0) {
+          console.error(`[Stream Video Saver] ERROR: Empty filename for init segment URL: ${url}`);
+          throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
+        console.log(`[Stream Video Saver] Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1242,68 +1391,62 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
           }
-          const blob = await response.blob();
-          const blobSize = blob.size;
-          downloadedBytes += blobSize;
+        const blob = await response.blob();
+        const blobSize = blob.size;
+        downloadedBytes += blobSize;
 
-          // Extract filename
-          let fileName: string;
-          try {
-            if (url.startsWith('http://') || url.startsWith('https://')) {
-              const urlObj = new URL(url);
-              const pathParts = urlObj.pathname.split('/');
-              fileName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'segment.ts';
-            } else {
-              const urlParts = url.split('?')[0].split('/');
-              fileName = urlParts[urlParts.length - 1] || 'segment.ts';
-            }
-            fileName = fileName.split('?')[0];
-          } catch (error) {
-            fileName = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'segment.ts';
-          }
+        // Use the filename from the mapping (handles duplicates automatically)
+        const fileName = segmentUrlToFilename.get(url);
+        if (!fileName) {
+          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for segment URL: ${url}`);
+          throw new Error(`Could not get filename from segment URL mapping for: ${url.substring(0, 100)}`);
+        }
 
-          if (!fileName) {
-            throw new Error('Could not extract filename from URL');
-          }
+        // Validate filename is not empty
+        if (!fileName || fileName.trim().length === 0) {
+          console.error(`[Stream Video Saver] ERROR: Empty filename for segment URL: ${url}`);
+          throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
+        }
 
-          // Convert blob to ArrayBuffer for better memory efficiency with large files
-          const arrayBuffer = await blob.arrayBuffer();
-          zip.file(fileName, arrayBuffer, { binary: true });
-          downloaded++;
+        // Convert blob to ArrayBuffer for better memory efficiency with large files
+        const arrayBuffer = await blob.arrayBuffer();
+        zip.file(fileName, arrayBuffer, { binary: true });
+        console.log(`[Stream Video Saver] Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
+        downloaded++;
 
-          // Calculate download speed
-          const now = Date.now();
-          const timeDelta = (now - lastUpdateTime) / 1000; // seconds
-          let downloadSpeed = 0;
-          if (timeDelta > 0) {
-            const bytesDelta = downloadedBytes - lastDownloadedBytes;
-            downloadSpeed = bytesDelta / timeDelta; // bytes per second
-            lastUpdateTime = now;
-            lastDownloadedBytes = downloadedBytes;
-          }
+        // Calculate download speed
+        const now = Date.now();
+        const timeDelta = (now - lastUpdateTime) / 1000; // seconds
+        let downloadSpeed = 0;
+        if (timeDelta > 0) {
+          const bytesDelta = downloadedBytes - lastDownloadedBytes;
+          downloadSpeed = bytesDelta / timeDelta; // bytes per second
+          lastUpdateTime = now;
+          lastDownloadedBytes = downloadedBytes;
+        }
 
-          // Update progress
-          const download = activeDownloads.get(downloadId);
-          if (download) {
-            download.progress = {
-              downloaded,
-              total,
-              status: 'downloading',
-              downloadedBytes,
-              totalBytes,
-              downloadSpeed
-            };
-          }
-          notifyDownloadProgress(downloadId, {
+        // Update progress
+        const download = activeDownloads.get(downloadId);
+        if (download) {
+          download.progress = {
             downloaded,
             total,
             status: 'downloading',
             downloadedBytes,
             totalBytes,
             downloadSpeed
-          });
+          };
+        }
+        notifyDownloadProgress(downloadId, {
+          downloaded,
+          total,
+          status: 'downloading',
+          downloadedBytes,
+          totalBytes,
+          downloadSpeed
+        });
 
-          console.log(`[Stream Video Saver] Successfully retried segment: ${fileName}`);
+        console.log(`[Stream Video Saver] Successfully retried segment: ${fileName}`);
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
             throw error;
@@ -1436,13 +1579,13 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
 /**
  * Modifies m3u8 content to use local filenames instead of full URLs.
- * Extracts just the filename from each segment URL line while preserving comments and metadata.
- * Also updates #EXT-X-MAP URI attributes to use local filenames.
+ * Uses the provided URL-to-filename mapping to ensure consistent naming (handles duplicates).
  * @param content - The original m3u8 file content
- * @param baseUrl - The base URL of the m3u8 file (used for parsing relative URLs)
+ * @param baseUrl - The base URL of the m3u8 file (used for resolving relative URLs to absolute URLs)
+ * @param urlToFilename - Map from segment URL to unique filename (handles duplicates)
  * @returns Modified m3u8 content with local filenames
  */
-function modifyM3U8ForLocalFiles(content: string, _baseUrl: string): string {
+function modifyM3U8ForLocalFiles(content: string, baseUrl: string, urlToFilename: Map<string, string>): string {
   const lines = content.split('\n');
   const modifiedLines: string[] = [];
 
@@ -1450,40 +1593,32 @@ function modifyM3U8ForLocalFiles(content: string, _baseUrl: string): string {
     const line = lines[i];
     const trimmedLine = line.trim();
 
-    // Handle #EXT-X-MAP tags - update URI to use local filename
+    // Handle #EXT-X-MAP tags - update URI to use local filename from mapping
     if (trimmedLine.startsWith('#EXT-X-MAP:')) {
       const uriMatch = trimmedLine.match(/URI="([^"]+)"/);
       if (uriMatch && uriMatch[1]) {
-        const uri = uriMatch[1];
-        let filename: string;
-
+        let uri = uriMatch[1];
+        // Resolve relative URI to absolute URL if needed
         try {
-          // Extract filename from URI
-          if (uri.startsWith('http://') || uri.startsWith('https://')) {
-            const url = new URL(uri);
-            const pathParts = url.pathname.split('/');
-            filename = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'init.mp4';
-          } else if (uri.startsWith('/')) {
-            const pathParts = uri.split('/');
-            filename = pathParts[pathParts.length - 1] || 'init.mp4';
-          } else {
-            const urlParts = uri.split('?')[0].split('/');
-            filename = urlParts[urlParts.length - 1] || 'init.mp4';
+          if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
+            // Relative URI - resolve against base URL
+            const baseUrlObj = new URL(baseUrl);
+            uri = new URL(uri, baseUrlObj.origin + baseUrlObj.pathname.substring(0, baseUrlObj.pathname.lastIndexOf('/') + 1)).href;
           }
-
+          // Look up filename in mapping
+          const filename = urlToFilename.get(uri);
           if (filename) {
-            filename = filename.split('?')[0];
             // Replace the URI in the tag with just the filename
             const modifiedLine = trimmedLine.replace(/URI="[^"]+"/, `URI="${filename}"`);
             modifiedLines.push(modifiedLine);
-            console.log(`[Stream Video Saver] Updated #EXT-X-MAP URI: ${uri} -> ${filename}`);
+            console.log(`[Stream Video Saver] Updated #EXT-X-MAP URI: ${uriMatch[1]} -> ${filename}`);
             continue;
           }
         } catch (error) {
-          console.warn(`[Stream Video Saver] Failed to parse init segment URI: ${uri}`, error);
+          console.warn(`[Stream Video Saver] Failed to resolve or map init segment URI: ${uriMatch[1]}`, error);
         }
       }
-      // If we couldn't parse it, keep the original line
+      // If we couldn't map it, keep the original line
       modifiedLines.push(line);
       continue;
     }
@@ -1494,31 +1629,27 @@ function modifyM3U8ForLocalFiles(content: string, _baseUrl: string): string {
       continue;
     }
 
-    // This is a segment URL line - extract just the filename
+    // This is a segment URL line - use filename from mapping
     try {
-      let filename: string;
-
-      // If it's a full URL, parse it
-      if (trimmedLine.startsWith('http://') || trimmedLine.startsWith('https://')) {
-        const url = new URL(trimmedLine);
-        const pathParts = url.pathname.split('/');
-        filename = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || 'segment.ts';
-      } else if (trimmedLine.startsWith('/')) {
-        const pathParts = trimmedLine.split('/');
-        filename = pathParts[pathParts.length - 1] || 'segment.ts';
+      let segmentUrl = trimmedLine;
+      // Resolve relative URL to absolute URL if needed
+      if (!segmentUrl.startsWith('http://') && !segmentUrl.startsWith('https://')) {
+        // Relative URL - resolve against base URL
+        const baseUrlObj = new URL(baseUrl);
+        segmentUrl = new URL(segmentUrl, baseUrlObj.origin + baseUrlObj.pathname.substring(0, baseUrlObj.pathname.lastIndexOf('/') + 1)).href;
+      }
+      // Look up filename in mapping
+      const filename = urlToFilename.get(segmentUrl);
+      if (filename) {
+        modifiedLines.push(filename);
       } else {
-        const urlParts = trimmedLine.split('?')[0].split('/');
-        filename = urlParts[urlParts.length - 1] || 'segment.ts';
-      }
-
-      if (!filename) {
+        // If not found in mapping, keep original (shouldn't happen but safe fallback)
+        console.warn(`[Stream Video Saver] Segment URL not found in mapping: ${segmentUrl}`);
         modifiedLines.push(line);
-        continue;
       }
-
-      filename = filename.split('?')[0];
-      modifiedLines.push(filename);
     } catch (error) {
+      // If URL resolution fails, keep original line
+      console.warn(`[Stream Video Saver] Failed to resolve or map segment URL: ${trimmedLine}`, error);
       modifiedLines.push(line);
     }
   }

@@ -17,7 +17,8 @@ import type {
   GetDownloadStatusResponse,
   DownloadProgressMessage,
   DownloadErrorMessage,
-  ManifestCapturedMessage
+  ManifestCapturedMessage,
+  M3U8FetchErrorMessage
 } from './types/index.js';
 import {
   isHTMLElement,
@@ -48,6 +49,24 @@ function formatBytes(bytes: number): string {
  */
 function formatSpeed(bytesPerSecond: number): string {
   return formatBytes(bytesPerSecond) + '/s';
+}
+
+/**
+ * Extracts filename from a URL.
+ * @param url - The URL to extract filename from
+ * @returns The filename or 'm3u8' as default
+ */
+function extractFilenameFromUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/').filter(part => part.length > 0);
+    return pathParts[pathParts.length - 1] || 'm3u8';
+  } catch (error) {
+    // Fallback for invalid URLs
+    const urlWithoutQuery = url.split('?')[0];
+    const pathParts = urlWithoutQuery.split('/').filter(part => part.length > 0);
+    return pathParts[pathParts.length - 1] || 'm3u8';
+  }
 }
 
 // Error handler to catch script loading errors
@@ -313,7 +332,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     selectedManifestId = manifestId;
+    // Clear any previous error messages when starting a new download
     errorDiv.classList.remove('show');
+    errorDiv.textContent = '';
     progressDiv.classList.add('active');
     progressFill.style.width = '0%';
     progressFill.textContent = '0%';
@@ -425,7 +446,7 @@ document.addEventListener('DOMContentLoaded', () => {
             text = `Created ${formatBytes(progressMessage.zipSize)} zip file`;
           } else if (progressMessage.totalBytes) {
             // Show uncompressed size while zipping is in progress
-            text = `Zipping ${formatBytes(progressMessage.totalBytes)} into zip...`;
+            text = `Compressing ${formatBytes(progressMessage.totalBytes)} into zip archive...`;
           }
           progressInfo.textContent = text;
         }
@@ -462,13 +483,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Use fixed-width format to prevent resizing as values change
         if (isHTMLElement(progressInfo)) {
           const segments = `${progressMessage.downloaded}/${progressMessage.total}`.padEnd(10);
-          const speed = progressMessage.downloadSpeed && progressMessage.downloadSpeed > 0 
+          const speed = progressMessage.downloadSpeed && progressMessage.downloadSpeed > 0
             ? formatSpeed(progressMessage.downloadSpeed).padEnd(12)
             : '            '; // 12 spaces as placeholder
           const size = progressMessage.downloadedBytes !== undefined
             ? formatBytes(progressMessage.downloadedBytes).padEnd(12)
             : '            '; // 12 spaces as placeholder
-          
+
           const text = `Segments: ${segments} ${speed} ${size}`.trimEnd();
           progressInfo.textContent = text;
         }
@@ -496,6 +517,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const capturedMessage = message as ManifestCapturedMessage;
       console.log(`[Stream Video Saver] Manifest captured: ${capturedMessage.fileName}`);
       updateStatus();
+    } else if (message.action === 'm3u8FetchError') {
+      // M3U8 fetch failed - show error to user
+      const fetchErrorMessage = message as M3U8FetchErrorMessage;
+      const fileName = extractFilenameFromUrl(fetchErrorMessage.url);
+      const errorMsg = `Failed to fetch ${fileName}: ${fetchErrorMessage.status} ${fetchErrorMessage.statusText || ''}`;
+      console.error(`[Stream Video Saver] ${errorMsg}`, fetchErrorMessage.url);
+      showError(errorMsg);
     }
   });
 
@@ -580,7 +608,7 @@ document.addEventListener('DOMContentLoaded', () => {
               text = `Created ${formatBytes(download.progress.zipSize)} zip file`;
             } else if (download.progress.totalBytes) {
               // Show uncompressed size while zipping is in progress
-              text = `Zipping ${formatBytes(download.progress.totalBytes)} into zip...`;
+              text = `Compressing ${formatBytes(download.progress.totalBytes)} into zip archive...`;
             }
             progressInfo.textContent = text;
           } else if (download.progress.status === 'complete') {
@@ -597,13 +625,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // Format: "Segments: {current}/{total} {speed} {Size}"
             // Use fixed-width format to prevent resizing as values change
             const segments = `${download.progress.downloaded}/${download.progress.total}`.padEnd(10);
-            const speed = download.progress.downloadSpeed && download.progress.downloadSpeed > 0 
+            const speed = download.progress.downloadSpeed && download.progress.downloadSpeed > 0
               ? formatSpeed(download.progress.downloadSpeed).padEnd(12)
               : '            '; // 12 spaces as placeholder
             const size = download.progress.downloadedBytes !== undefined
               ? formatBytes(download.progress.downloadedBytes).padEnd(12)
               : '            '; // 12 spaces as placeholder
-            
+
             const text = `Segments: ${segments} ${speed} ${size}`.trimEnd();
             progressInfo.textContent = text;
           }
