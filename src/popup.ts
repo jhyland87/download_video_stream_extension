@@ -18,6 +18,7 @@ import type {
   DownloadProgressMessage,
   DownloadErrorMessage,
   ManifestCapturedMessage,
+  PreviewUpdatedMessage,
   M3U8FetchErrorMessage
 } from './types/index.js';
 import {
@@ -290,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     manifestHistoryDiv.innerHTML = html;
     console.log(`[Stream Video Saver] Rendered ${manifests.length} manifest items`);
 
-    // Attach hover event listeners to preview images for frame cycling
+    // Attach hover event listeners to all preview images for frame cycling
     const previewImages = manifestHistoryDiv.querySelectorAll('.manifest-preview-image') as NodeListOf<HTMLImageElement>;
     previewImages.forEach((img) => {
       const previewDiv = img.closest('.manifest-item-preview') as HTMLElement;
@@ -301,39 +302,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
       try {
         const previewUrls: string[] = JSON.parse(previewUrlsJson);
-        if (!Array.isArray(previewUrls) || previewUrls.length <= 1) return;
-
-        let currentIndex = 0;
-        let hoverInterval: number | null = null;
-
-        // Start cycling on hover
-        previewDiv.addEventListener('mouseenter', () => {
-          if (hoverInterval !== null) return; // Already cycling
-
-          const cycleFrames = (): void => {
-            currentIndex = (currentIndex + 1) % previewUrls.length;
-            img.src = previewUrls[currentIndex];
-            img.setAttribute('data-current-index', currentIndex.toString());
-          };
-
-          // Cycle every 1 second
-          hoverInterval = window.setInterval(cycleFrames, 1000);
-        });
-
-        // Stop cycling on mouse leave
-        previewDiv.addEventListener('mouseleave', () => {
-          if (hoverInterval !== null) {
-            clearInterval(hoverInterval);
-            hoverInterval = null;
-          }
-          // Reset to first frame
-          currentIndex = 0;
-          img.src = previewUrls[0];
-          img.setAttribute('data-current-index', '0');
-        });
+        attachPreviewHoverListeners(previewDiv, img, previewUrls);
       } catch (error) {
         console.error('[Stream Video Saver] Error parsing preview URLs for hover cycling:', error);
       }
+    });
+  }
+
+  /**
+   * Attaches hover event listeners to a preview image for frame cycling.
+   * @param previewDiv - The preview container div
+   * @param img - The preview image element
+   * @param previewUrls - Array of preview image URLs to cycle through
+   */
+  function attachPreviewHoverListeners(previewDiv: HTMLElement, img: HTMLImageElement, previewUrls: string[]): void {
+    if (!Array.isArray(previewUrls) || previewUrls.length <= 1) return;
+
+    let currentIndex = 0;
+    let hoverInterval: number | null = null;
+
+    // Start cycling on hover
+    previewDiv.addEventListener('mouseenter', () => {
+      if (hoverInterval !== null) return; // Already cycling
+
+      const cycleFrames = (): void => {
+        currentIndex = (currentIndex + 1) % previewUrls.length;
+        img.src = previewUrls[currentIndex];
+        img.setAttribute('data-current-index', currentIndex.toString());
+      };
+
+      // Cycle every 1 second
+      hoverInterval = window.setInterval(cycleFrames, 1000);
+    });
+
+    // Stop cycling on mouse leave
+    previewDiv.addEventListener('mouseleave', () => {
+      if (hoverInterval !== null) {
+        clearInterval(hoverInterval);
+        hoverInterval = null;
+      }
+      // Reset to first frame
+      currentIndex = 0;
+      img.src = previewUrls[0];
+      img.setAttribute('data-current-index', '0');
     });
   }
 
@@ -575,6 +586,54 @@ document.addEventListener('DOMContentLoaded', () => {
       const capturedMessage = message as ManifestCapturedMessage;
       console.log(`[Stream Video Saver] Manifest captured: ${capturedMessage.fileName}`);
       updateStatus();
+    } else if (message.action === 'previewUpdated') {
+      // Preview frames are ready - update the specific manifest item
+      const previewMessage = message as PreviewUpdatedMessage;
+      console.log(`[Stream Video Saver] Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
+      
+      // Update the specific manifest item's preview in the UI
+      const manifestItem = document.querySelector(`[data-manifest-id="${previewMessage.manifestId}"]`) as HTMLElement;
+      if (manifestItem && previewMessage.previewUrls.length > 0) {
+        let previewDiv = manifestItem.querySelector('.manifest-item-preview') as HTMLElement;
+        let previewImg = manifestItem.querySelector('.manifest-preview-image') as HTMLImageElement;
+        
+        if (!previewDiv) {
+          // Create preview div and img if they don't exist
+          previewDiv = document.createElement('div');
+          previewDiv.className = 'manifest-item-preview';
+          previewImg = document.createElement('img');
+          previewImg.className = 'manifest-preview-image';
+          previewImg.alt = 'Video preview';
+          previewDiv.appendChild(previewImg);
+          
+          // Insert preview before manifest-item-content
+          const contentDiv = manifestItem.querySelector('.manifest-item-content');
+          if (contentDiv) {
+            manifestItem.insertBefore(previewDiv, contentDiv);
+          } else {
+            manifestItem.appendChild(previewDiv);
+          }
+        }
+        
+        if (previewDiv && previewImg) {
+          // Update preview HTML with the new frames
+          previewDiv.setAttribute('data-preview-urls', JSON.stringify(previewMessage.previewUrls));
+          previewImg.src = previewMessage.previewUrls[0];
+          previewImg.setAttribute('data-current-index', '0');
+          
+          // Remove old listeners and re-attach hover event listeners for cycling
+          const newPreviewDiv = previewDiv.cloneNode(true) as HTMLElement;
+          previewDiv.parentNode?.replaceChild(newPreviewDiv, previewDiv);
+          const newPreviewImg = newPreviewDiv.querySelector('.manifest-preview-image') as HTMLImageElement;
+          if (newPreviewImg) {
+            attachPreviewHoverListeners(newPreviewDiv, newPreviewImg, previewMessage.previewUrls);
+          }
+        }
+      } else if (!manifestItem) {
+        // Manifest item not found - refresh the whole list
+        console.log(`[Stream Video Saver] Manifest item ${previewMessage.manifestId} not found in DOM, refreshing list`);
+        updateStatus();
+      }
     } else if (message.action === 'm3u8FetchError') {
       // M3U8 fetch failed - show error to user
       const fetchErrorMessage = message as M3U8FetchErrorMessage;

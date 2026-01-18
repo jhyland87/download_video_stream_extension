@@ -89,6 +89,8 @@ export type MessageAction =
   | 'downloadProgress'
   | 'downloadError'
   | 'manifestCaptured'
+  | 'previewUpdated'
+  | 'previewFrameReady'
   | 'segmentDownloaded'
   | 'm3u8ResponseCaptured';
 
@@ -182,6 +184,25 @@ export interface ManifestCapturedMessage extends BaseMessage {
 }
 
 /**
+ * Preview frame ready message (sent when a single preview frame is ready)
+ */
+export interface PreviewFrameReadyMessage extends BaseMessage {
+  action: 'previewFrameReady';
+  manifestId: string;
+  frameUrl: string;
+  frameIndex: number;
+}
+
+/**
+ * Preview updated message (sent when preview frames are ready)
+ */
+export interface PreviewUpdatedMessage extends BaseMessage {
+  action: 'previewUpdated';
+  manifestId: string;
+  previewUrls: string[];
+}
+
+/**
  * Segment downloaded message
  */
 export interface SegmentDownloadedMessage extends BaseMessage {
@@ -224,6 +245,8 @@ export type ExtensionMessage =
   | DownloadProgressMessage
   | DownloadErrorMessage
   | ManifestCapturedMessage
+  | PreviewUpdatedMessage
+  | PreviewFrameReadyMessage
   | SegmentDownloadedMessage
   | M3U8ResponseCapturedMessage
   | M3U8FetchErrorMessage;

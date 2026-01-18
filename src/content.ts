@@ -149,18 +149,72 @@ async function waitForVideoLoad(video: HTMLVideoElement, timeout: number = 2000)
 }
 
 /**
- * Waits for the video to seek to a specific time and be ready.
- * @param video - The video element to seek
- * @param time - Time in seconds to seek to
- * @param timeout - Maximum time to wait in milliseconds (default: 2000ms)
- * @returns Promise that resolves when seek is complete, or rejects on timeout
+ * Waits for the video to naturally reach a specific time during playback.
+ * Monitors timeupdate events and captures when the video reaches the target time.
+ * @param video - The video element to monitor
+ * @param targetTime - Target time in seconds to wait for
+ * @param timeout - Maximum time to wait in milliseconds (default: 10000ms)
+ * @returns Promise that resolves when video reaches the target time, or rejects on timeout
  */
-async function waitForVideoSeek(video: HTMLVideoElement, time: number, timeout: number = 2000): Promise<void> {
-  video.currentTime = time;
-  await waitForVideoEvent(video, 'seeked', timeout);
-  // Wait a bit for the frame to be rendered
-  await delay(100);
-  console.log(`[Stream Video Saver] Video seeked to ${time}s successfully`);
+async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, timeout: number = 10000): Promise<void> {
+  const tolerance = 0.3; // Capture within 0.3 seconds of target time
+  const startTime = Date.now();
+  const wasPlaying = !video.paused;
+  const originalPlaybackRate = video.playbackRate;
+
+  // Start playing if not already playing (at faster rate to speed up capture)
+  if (video.paused) {
+    video.playbackRate = 2.0; // Play at 2x speed to capture frames faster
+    await video.play();
+  }
+
+  // If video is before target, wait for it to reach it
+  // If video is after target, we've already missed it, so just capture current frame
+  if (video.currentTime >= targetTime - tolerance && video.currentTime <= targetTime + tolerance) {
+    console.log(`[Stream Video Saver] Video already at target time ${targetTime}s (current: ${video.currentTime}s)`);
+    return;
+  }
+
+  if (video.currentTime > targetTime + tolerance) {
+    // Video has already passed the target time, can't capture it naturally
+    throw new Error(`Video has already passed target time ${targetTime}s (current: ${video.currentTime}s)`);
+  }
+
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+
+  const timeoutId = setTimeout(() => {
+    video.removeEventListener('timeupdate', checkTime);
+    if (!wasPlaying) {
+      video.pause();
+      video.playbackRate = originalPlaybackRate;
+    }
+    reject(new Error(`Video did not reach time ${targetTime}s within ${timeout}ms`));
+  }, timeout);
+
+  const checkTime = (): void => {
+    const currentTime = video.currentTime;
+    if (currentTime >= targetTime - tolerance && currentTime <= targetTime + tolerance) {
+      clearTimeout(timeoutId);
+      video.removeEventListener('timeupdate', checkTime);
+
+      // Restore playback state if we changed it
+      if (!wasPlaying) {
+        video.pause();
+        video.playbackRate = originalPlaybackRate;
+      }
+
+      console.log(`[Stream Video Saver] Video reached target time ${targetTime}s (current: ${currentTime}s)`);
+      // Wait a bit for the frame to be rendered
+      setTimeout(() => resolve(), 50);
+    }
+  };
+
+  video.addEventListener('timeupdate', checkTime);
+
+  // Also check immediately in case timeupdate doesn't fire frequently enough
+  checkTime();
+
+  return promise;
 }
 
 /**
@@ -218,7 +272,7 @@ function captureFrameAtCurrentTime(video: HTMLVideoElement, maxWidth: number = 3
  * @param timestamps - Array of timestamps in seconds to capture (default: [1, 3, 5])
  * @returns Array of data URLs of the captured frames, or empty array if capture fails
  */
-async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180, timestamps: number[] = [...PREVIEW_TIMESTAMPS]): Promise<string[]> {
+async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180, timestamps: number[] = [...PREVIEW_TIMESTAMPS], manifestId?: string): Promise<string[]> {
   console.log(`[Stream Video Saver] captureVideoFrame called with maxWidth=${maxWidth}, maxHeight=${maxHeight}`);
   try {
     // First, try to find video elements in the main document
@@ -319,49 +373,43 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
       return frame ? [frame] : [];
     }
 
-    // Store original time and muted state to restore later
-    const originalTime = video.currentTime;
-    const originalMuted = video.muted;
     const previewFrames: string[] = [];
 
-    // Mute video during capture to avoid audio playback
-    video.muted = true;
-
     try {
-      // Capture frames at specified timestamps
+      // Capture frames at specified timestamps as video naturally plays
       for (const timestamp of timestamps) {
         // Clamp timestamp to video duration
-        const seekTime = Math.min(Math.max(0, timestamp), video.duration);
+        const targetTime = Math.min(Math.max(0, timestamp), video.duration);
 
-        console.log(`[Stream Video Saver] Seeking to ${seekTime}s (duration: ${video.duration}s)`);
+        console.log(`[Stream Video Saver] Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
 
         try {
-          await waitForVideoSeek(video, seekTime, 2000);
+          await waitForVideoTime(video, targetTime, 10000);
           const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
           if (frame) {
             previewFrames.push(frame);
-            console.log(`[Stream Video Saver] Successfully captured frame at ${seekTime}s (${Math.round(frame.length / 1024)}KB)`);
+            console.log(`[Stream Video Saver] Successfully captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
+
+            // Send individual frame to background script immediately (if manifestId provided)
+            if (manifestId) {
+              chrome.runtime.sendMessage({
+                action: 'previewFrameReady',
+                manifestId: manifestId,
+                frameUrl: frame,
+                frameIndex: previewFrames.length - 1
+              } as ExtensionMessage).catch((error) => {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.log(`[Stream Video Saver] Error sending individual preview frame: ${errorMessage}`);
+              });
+            }
           } else {
-            console.log(`[Stream Video Saver] Failed to capture frame at ${seekTime}s`);
+            console.log(`[Stream Video Saver] Failed to capture frame at ${targetTime}s`);
           }
-        } catch (seekError) {
-          const errorMessage = seekError instanceof Error ? seekError.message : String(seekError);
-          console.log(`[Stream Video Saver] Error seeking to ${seekTime}s: ${errorMessage}`);
+        } catch (timeError) {
+          const errorMessage = timeError instanceof Error ? timeError.message : String(timeError);
+          console.log(`[Stream Video Saver] Error waiting for video time ${targetTime}s: ${errorMessage}`);
           // Continue with next timestamp
         }
-      }
-
-      // Restore original video time and muted state
-      try {
-        video.currentTime = originalTime;
-        // Only restore unmuted state if video was originally unmuted
-        // If it was already muted, keep it muted
-        if (!originalMuted) {
-          video.muted = originalMuted;
-        }
-      } catch (restoreError) {
-        // Ignore restore errors
-        console.log('[Stream Video Saver] Could not restore original video time/muted state');
       }
 
       if (previewFrames.length === 0) {
@@ -404,19 +452,25 @@ chrome.runtime.onMessage.addListener((
 
   if (message.action === 'getVideoPreview') {
     console.log('[Stream Video Saver] Content script received getVideoPreview message');
-    // Use async/await to handle the promise
-    captureVideoFrame().then((previewUrls) => {
-      if (previewUrls && previewUrls.length > 0) {
-        console.log(`[Stream Video Saver] Content script sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
-      } else {
-        console.log('[Stream Video Saver] Content script could not capture preview - returning empty array');
+    const manifestId = (message as { manifestId?: string }).manifestId;
+
+    // Handle async operation
+    (async (): Promise<void> => {
+      try {
+        const previewUrls = await captureVideoFrame(320, 180, [...PREVIEW_TIMESTAMPS], manifestId);
+        if (previewUrls && previewUrls.length > 0) {
+          console.log(`[Stream Video Saver] Content script sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
+        } else {
+          console.log('[Stream Video Saver] Content script could not capture preview - returning empty array');
+        }
+        sendResponse({ previewUrls: previewUrls || [] });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[Stream Video Saver] Error capturing preview: ${errorMessage}`);
+        sendResponse({ previewUrls: [] });
       }
-      sendResponse({ previewUrls: previewUrls || [] });
-    }).catch((error) => {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[Stream Video Saver] Error capturing preview: ${errorMessage}`);
-      sendResponse({ previewUrls: [] });
-    });
+    })();
+
     return true; // Indicate we will send response asynchronously
   }
 

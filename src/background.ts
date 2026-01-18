@@ -17,6 +17,7 @@ import type {
   SegmentDownloadedMessage,
   StartDownloadMessage,
   CancelDownloadMessage,
+  PreviewFrameReadyMessage,
 } from './types/index.js';
 
 /**
@@ -318,20 +319,14 @@ async function processM3U8Content(
     console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
   }
 
-  // Try to get video title and preview frame from the page (needed for duplicate detection)
+  // Try to get video title from the page (needed for duplicate detection)
   let title: string | undefined;
-  let previewUrls: string[] | undefined;
 
-  // First, try to get video title and preview from content script
+  // First, try to get video title from content script (preview will be captured asynchronously)
   if (details.tabId && details.tabId > 0) {
-    console.log(`[Stream Video Saver] Requesting video title and preview from tab ${details.tabId}`);
+    console.log(`[Stream Video Saver] Requesting video title from tab ${details.tabId}`);
     try {
-      const [videoTitleResponse, videoPreviewResponse] = await Promise.all([
-        chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' }),
-        chrome.tabs.sendMessage(details.tabId, { action: 'getVideoPreview' })
-      ]);
-      
-      console.log(`[Stream Video Saver] Received responses - title: ${!!videoTitleResponse}, preview: ${!!videoPreviewResponse}`);
+      const videoTitleResponse = await chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' });
       
       if (videoTitleResponse && videoTitleResponse.title) {
         title = videoTitleResponse.title;
@@ -339,27 +334,13 @@ async function processM3U8Content(
       } else {
         console.log('[Stream Video Saver] No video title in response');
       }
-
-      if (videoPreviewResponse) {
-        console.log(`[Stream Video Saver] Preview response received - previewUrls present: ${!!videoPreviewResponse.previewUrls}, type: ${typeof videoPreviewResponse.previewUrls}, length: ${videoPreviewResponse.previewUrls?.length || 0}`);
-        if (videoPreviewResponse.previewUrls && videoPreviewResponse.previewUrls.length > 0) {
-          const capturedPreviewUrls = videoPreviewResponse.previewUrls;
-          previewUrls = capturedPreviewUrls;
-          const totalSizeKB = Math.round(capturedPreviewUrls.reduce((sum: number, url: string) => sum + url.length, 0) / 1024);
-          console.log(`[Stream Video Saver] Successfully captured ${capturedPreviewUrls.length} video preview frame(s) (total ${totalSizeKB}KB), stored in manifest`);
-        } else {
-          console.log('[Stream Video Saver] Preview response received but previewUrls is empty or undefined');
-        }
-      } else {
-        console.log('[Stream Video Saver] No preview response received');
-      }
     } catch (error) {
       // Content script might not be available, continue to fallback
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`[Stream Video Saver] Could not get video title/preview from content script (${errorMessage}), trying tab title`);
+      console.log(`[Stream Video Saver] Could not get video title from content script (${errorMessage}), trying tab title`);
     }
   } else {
-    console.log('[Stream Video Saver] No tabId available, skipping preview capture');
+    console.log('[Stream Video Saver] No tabId available, skipping title extraction');
   }
 
   // Fallback to tab title if video title not found
@@ -405,7 +386,7 @@ async function processM3U8Content(
     duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
     duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
     duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
-    duplicateCheck.previewUrls = previewUrls || duplicateCheck.previewUrls; // Update preview if available
+    // Preview URLs will be updated asynchronously via capturePreviewAsync
 
     // Notify popup that manifest was updated
     chrome.runtime.sendMessage({
@@ -421,7 +402,7 @@ async function processM3U8Content(
     return;
   }
 
-  // Create manifest object and add to history
+  // Create manifest object and add to history (without previewUrls initially)
   const manifestId = generateManifestId();
   const manifest: Manifest = {
     id: manifestId,
@@ -434,7 +415,7 @@ async function processM3U8Content(
     resolution: resolution,
     duration: duration,
     tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined,
-    previewUrls: previewUrls
+    previewUrls: undefined // Will be updated when preview is ready
   };
 
   manifestHistory.push(manifest);
@@ -455,7 +436,7 @@ async function processM3U8Content(
     console.log(`[Stream Video Saver] First few segments: ${segmentUrls.slice(0, 3)}`);
   }
 
-  // Notify popup that a new manifest is available
+  // Notify popup that a new manifest is available (immediately, before preview is ready)
   chrome.runtime.sendMessage({
     action: 'manifestCaptured',
     manifestId: manifestId,
@@ -465,6 +446,51 @@ async function processM3U8Content(
   } as ExtensionMessage).catch(() => {
     // Ignore if no listeners
   });
+
+  // Capture preview asynchronously (don't block manifest creation)
+  if (details.tabId && details.tabId > 0) {
+    capturePreviewAsync(details.tabId, manifestId).catch((error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.log(`[Stream Video Saver] Error capturing preview asynchronously: ${errorMessage}`);
+    });
+  }
+}
+
+/**
+ * Captures video preview frames asynchronously and updates the manifest when ready.
+ * @param tabId - Tab ID where the video is playing
+ * @param manifestId - ID of the manifest to update with preview frames
+ */
+/**
+ * Captures video preview frames asynchronously.
+ * Frames are sent individually as they're captured via previewFrameReady messages.
+ * @param tabId - Tab ID where the video is playing
+ * @param manifestId - ID of the manifest to update with preview frames
+ */
+async function capturePreviewAsync(tabId: number, manifestId: string): Promise<void> {
+  console.log(`[Stream Video Saver] Starting async preview capture for manifest ${manifestId} from tab ${tabId}`);
+  
+  // Initialize previewUrls array in manifest
+  const manifest = manifestHistory.find((m) => m.id === manifestId);
+  if (!manifest) {
+    console.log(`[Stream Video Saver] Manifest ${manifestId} not found when starting preview capture`);
+    return;
+  }
+  
+  if (!manifest.previewUrls) {
+    manifest.previewUrls = [];
+  }
+  
+  try {
+    // Send message to content script with manifestId
+    // Content script will send individual frames as previewFrameReady messages
+    await chrome.tabs.sendMessage(tabId, { action: 'getVideoPreview', manifestId: manifestId });
+    console.log(`[Stream Video Saver] Preview capture initiated for manifest ${manifestId}`);
+    // Individual frames will arrive via previewFrameReady messages
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.log(`[Stream Video Saver] Error initiating preview capture: ${errorMessage}`);
+  }
 }
 
 /**
@@ -507,11 +533,53 @@ chrome.runtime.onMessage.addListener((
       handleGetDownloadStatus(sendResponse);
       return true;
 
+    case 'previewFrameReady':
+      // Handle individual preview frame as it arrives
+      handlePreviewFrameReady(message as PreviewFrameReadyMessage);
+      return false; // No response needed
+
     default:
       console.warn(`[Stream Video Saver] Unknown message action: ${(message as { action: unknown }).action}`);
       return false;
   }
 });
+
+/**
+ * Handles individual preview frame ready messages from content script.
+ * Updates manifest and notifies popup incrementally.
+ * @param message - PreviewFrameReadyMessage containing frame data
+ */
+function handlePreviewFrameReady(message: PreviewFrameReadyMessage): void {
+  const { manifestId, frameUrl, frameIndex } = message;
+  
+  const manifest = manifestHistory.find((m) => m.id === manifestId);
+  if (!manifest) {
+    console.log(`[Stream Video Saver] Manifest ${manifestId} not found when handling preview frame ${frameIndex}`);
+    return;
+  }
+
+  // Initialize previewUrls array if needed
+  if (!manifest.previewUrls) {
+    manifest.previewUrls = [];
+  }
+
+  // Insert frame at correct index (may have gaps if frames arrive out of order)
+  manifest.previewUrls[frameIndex] = frameUrl;
+  
+  // Get all frames collected so far (remove any undefined gaps)
+  const collectedFrames = manifest.previewUrls.filter((url): url is string => url !== undefined);
+  
+  // Send incremental update to popup with all frames collected so far
+  chrome.runtime.sendMessage({
+    action: 'previewUpdated',
+    manifestId: manifestId,
+    previewUrls: collectedFrames
+  } as ExtensionMessage).catch(() => {
+    // Ignore if no listeners
+  });
+
+  console.log(`[Stream Video Saver] Preview frame ${frameIndex} received for manifest ${manifestId} (total: ${collectedFrames.length})`);
+}
 
 /**
  * Sanitizes a filename by removing non-ASCII characters and invalid filesystem characters.
