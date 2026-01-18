@@ -24,6 +24,7 @@ export interface Manifest {
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
   tabId?: number; // Tab ID where the manifest was captured (for title extraction)
+  previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
 /**
@@ -38,6 +39,7 @@ export interface ManifestSummary {
   capturedAt: string;
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
+  previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
 /**

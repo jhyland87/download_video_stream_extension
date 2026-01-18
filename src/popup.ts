@@ -259,17 +259,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const infoText = infoParts.join(' • ');
 
+      // Generate preview image HTML if available
+      const hasPreview = !!manifest.previewUrls && manifest.previewUrls.length > 0;
+      console.log(`[Stream Video Saver] Rendering manifest ${manifest.id}: hasPreview=${hasPreview}, previewUrls count=${manifest.previewUrls?.length || 0}`);
+      const previewHtml = hasPreview && manifest.previewUrls
+        ? `<div class="manifest-item-preview" data-preview-urls='${escapeHtml(JSON.stringify(manifest.previewUrls))}'>
+             <img src="${escapeHtml(manifest.previewUrls[0])}" alt="Video preview" class="manifest-preview-image" data-current-index="0" onerror="console.error('[Stream Video Saver] Preview image failed to load for manifest ${escapeHtml(manifest.id)}')" />
+           </div>`
+        : '';
+
       return `
         <div class="manifest-item" data-manifest-id="${escapeHtml(manifest.id)}">
-          <div class="manifest-item-header">
-            <span>${escapeHtml(displayTitle)}</span>
-            <button class="btn-small secondary btn-clear-manifest" data-manifest-id="${escapeHtml(manifest.id)}" style="padding: 2px 6px; font-size: 10px;">×</button>
-          </div>
-          <div class="manifest-item-info">
-            ${infoText}
-          </div>
-          <div class="manifest-item-actions">
-            <button class="button primary btn-download-zip" data-manifest-id="${escapeHtml(manifest.id)}" style="font-size: 11px; padding: 6px;">Download ZIP</button>
+          ${previewHtml}
+          <div class="manifest-item-content">
+            <div class="manifest-item-header">
+              <span>${escapeHtml(displayTitle)}</span>
+              <button class="btn-small secondary btn-clear-manifest" data-manifest-id="${escapeHtml(manifest.id)}" style="padding: 2px 6px; font-size: 10px;">×</button>
+            </div>
+            <div class="manifest-item-info">
+              ${infoText}
+            </div>
+            <div class="manifest-item-actions">
+              <button class="button primary btn-download-zip" data-manifest-id="${escapeHtml(manifest.id)}" style="font-size: 11px; padding: 6px;">Download ZIP</button>
+            </div>
           </div>
         </div>
       `;
@@ -277,6 +289,52 @@ document.addEventListener('DOMContentLoaded', () => {
 
     manifestHistoryDiv.innerHTML = html;
     console.log(`[Stream Video Saver] Rendered ${manifests.length} manifest items`);
+
+    // Attach hover event listeners to preview images for frame cycling
+    const previewImages = manifestHistoryDiv.querySelectorAll('.manifest-preview-image') as NodeListOf<HTMLImageElement>;
+    previewImages.forEach((img) => {
+      const previewDiv = img.closest('.manifest-item-preview') as HTMLElement;
+      if (!previewDiv) return;
+
+      const previewUrlsJson = previewDiv.getAttribute('data-preview-urls');
+      if (!previewUrlsJson) return;
+
+      try {
+        const previewUrls: string[] = JSON.parse(previewUrlsJson);
+        if (!Array.isArray(previewUrls) || previewUrls.length <= 1) return;
+
+        let currentIndex = 0;
+        let hoverInterval: number | null = null;
+
+        // Start cycling on hover
+        previewDiv.addEventListener('mouseenter', () => {
+          if (hoverInterval !== null) return; // Already cycling
+
+          const cycleFrames = (): void => {
+            currentIndex = (currentIndex + 1) % previewUrls.length;
+            img.src = previewUrls[currentIndex];
+            img.setAttribute('data-current-index', currentIndex.toString());
+          };
+
+          // Cycle every 1 second
+          hoverInterval = window.setInterval(cycleFrames, 1000);
+        });
+
+        // Stop cycling on mouse leave
+        previewDiv.addEventListener('mouseleave', () => {
+          if (hoverInterval !== null) {
+            clearInterval(hoverInterval);
+            hoverInterval = null;
+          }
+          // Reset to first frame
+          currentIndex = 0;
+          img.src = previewUrls[0];
+          img.setAttribute('data-current-index', '0');
+        });
+      } catch (error) {
+        console.error('[Stream Video Saver] Error parsing preview URLs for hover cycling:', error);
+      }
+    });
   }
 
   /**

@@ -121,6 +121,7 @@ function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): v
       capturedAt: m.capturedAt,
       resolution: m.resolution,
       duration: m.duration,
+      previewUrls: m.previewUrls,
       urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
       dedupKey: m.title && m.expectedSegments.length > 0
         ? `${m.title}|${m.expectedSegments.length}` // Title + segment count for deduplication
@@ -146,7 +147,8 @@ function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): v
       segmentCount: m.segmentCount,
       capturedAt: m.capturedAt,
       resolution: m.resolution,
-      duration: m.duration
+      duration: m.duration,
+      previewUrls: m.previewUrls
     }))
     // Sort by capturedAt in descending order (most recent first)
     .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
@@ -316,21 +318,48 @@ async function processM3U8Content(
     console.log(`[Stream Video Saver] Found duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
   }
 
-  // Try to get video title from the page (needed for duplicate detection)
+  // Try to get video title and preview frame from the page (needed for duplicate detection)
   let title: string | undefined;
+  let previewUrls: string[] | undefined;
 
-  // First, try to get video title from content script
+  // First, try to get video title and preview from content script
   if (details.tabId && details.tabId > 0) {
+    console.log(`[Stream Video Saver] Requesting video title and preview from tab ${details.tabId}`);
     try {
-      const videoTitleResponse = await chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' });
+      const [videoTitleResponse, videoPreviewResponse] = await Promise.all([
+        chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' }),
+        chrome.tabs.sendMessage(details.tabId, { action: 'getVideoPreview' })
+      ]);
+      
+      console.log(`[Stream Video Saver] Received responses - title: ${!!videoTitleResponse}, preview: ${!!videoPreviewResponse}`);
+      
       if (videoTitleResponse && videoTitleResponse.title) {
         title = videoTitleResponse.title;
         console.log(`[Stream Video Saver] Found video title from content script: ${title}`);
+      } else {
+        console.log('[Stream Video Saver] No video title in response');
+      }
+
+      if (videoPreviewResponse) {
+        console.log(`[Stream Video Saver] Preview response received - previewUrls present: ${!!videoPreviewResponse.previewUrls}, type: ${typeof videoPreviewResponse.previewUrls}, length: ${videoPreviewResponse.previewUrls?.length || 0}`);
+        if (videoPreviewResponse.previewUrls && videoPreviewResponse.previewUrls.length > 0) {
+          const capturedPreviewUrls = videoPreviewResponse.previewUrls;
+          previewUrls = capturedPreviewUrls;
+          const totalSizeKB = Math.round(capturedPreviewUrls.reduce((sum: number, url: string) => sum + url.length, 0) / 1024);
+          console.log(`[Stream Video Saver] Successfully captured ${capturedPreviewUrls.length} video preview frame(s) (total ${totalSizeKB}KB), stored in manifest`);
+        } else {
+          console.log('[Stream Video Saver] Preview response received but previewUrls is empty or undefined');
+        }
+      } else {
+        console.log('[Stream Video Saver] No preview response received');
       }
     } catch (error) {
       // Content script might not be available, continue to fallback
-      console.log('[Stream Video Saver] Could not get video title from content script, trying tab title');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.log(`[Stream Video Saver] Could not get video title/preview from content script (${errorMessage}), trying tab title`);
     }
+  } else {
+    console.log('[Stream Video Saver] No tabId available, skipping preview capture');
   }
 
   // Fallback to tab title if video title not found
@@ -376,6 +405,7 @@ async function processM3U8Content(
     duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
     duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
     duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
+    duplicateCheck.previewUrls = previewUrls || duplicateCheck.previewUrls; // Update preview if available
 
     // Notify popup that manifest was updated
     chrome.runtime.sendMessage({
@@ -403,7 +433,8 @@ async function processM3U8Content(
     capturedAt: new Date().toISOString(),
     resolution: resolution,
     duration: duration,
-    tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined
+    tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined,
+    previewUrls: previewUrls
   };
 
   manifestHistory.push(manifest);
@@ -878,7 +909,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
 
     // Always include headers if we have any, otherwise use minimal defaults
     const fetchOptions: RequestInit = {
-      credentials: 'include', // Important: include cookies for authentication
+      credentials: 'include',  // Important: include cookies for authentication
       referrerPolicy: 'origin',
       referrer: 'origin'
     };
