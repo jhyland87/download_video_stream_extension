@@ -273,40 +273,44 @@ function captureFrameAtCurrentTime(video: HTMLVideoElement, maxWidth: number = 3
  * @returns Array of data URLs of the captured frames, or empty array if capture fails
  */
 async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180, timestamps: number[] = [...PREVIEW_TIMESTAMPS], manifestId?: string): Promise<string[]> {
-  console.log(`[Stream Video Saver] captureVideoFrame called with maxWidth=${maxWidth}, maxHeight=${maxHeight}`);
+  console.groupCollapsed(`[Stream Video Saver] captureVideoFrame (${maxWidth}x${maxHeight}, ${timestamps.length} timestamps)`);
   try {
     // First, try to find video elements in the main document
     const videoElements = document.getElementsByTagName('video');
-    console.log(`[Stream Video Saver] Found ${videoElements.length} video element(s) in main document`);
+    console.log(`Found ${videoElements.length} video element(s) in main document`);
 
     let video: HTMLVideoElement | null = null;
 
       for (let i = 0; i < videoElements.length; i++) {
       const v = videoElements[i];
-      console.log(`[Stream Video Saver] Video element ${i}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}, src=${v.src?.substring(0, 100)}`);
+      console.log(`Video element ${i}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}, src=${v.src?.substring(0, 100)}`);
       // Check if video is loaded and has dimensions
       if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
         video = v;
-        console.log(`[Stream Video Saver] Selected video element ${i} for preview capture`);
+        console.log(`Selected video element ${i} for preview capture`);
         break;
-      } else if (v.videoWidth > 0 && v.videoHeight > 0) {
+      }
+
+      if (v.videoWidth > 0 && v.videoHeight > 0) {
         // Video has dimensions but readyState < 2 - we'll wait for it
         video = v;
-        console.log(`[Stream Video Saver] Selected video element ${i} (has dimensions but readyState < 2, will wait)`);
+        console.log(`Selected video element ${i} (has dimensions but readyState < 2, will wait)`);
         break;
-      } else if (v.src || v.currentSrc) {
+      }
+
+      if (v.src || v.currentSrc) {
         // Video has a source but not loaded yet - we'll try waiting for it
         video = v;
-        console.log(`[Stream Video Saver] Selected video element ${i} (has source but not loaded, will wait)`);
+        console.log(`Selected video element ${i} (has source but not loaded, will wait)`);
         break;
       }
     }
 
     // If no video found in main document, try searching in iframes
     if (!video) {
-      console.log('[Stream Video Saver] No video found in main document, trying iframes...');
+      console.log('No video found in main document, trying iframes...');
       const iframes = document.getElementsByTagName('iframe');
-      console.log(`[Stream Video Saver] Found ${iframes.length} iframe(s) on page`);
+      console.log(`Found ${iframes.length} iframe(s) on page`);
 
       for (let i = 0; i < iframes.length; i++) {
         const iframe = iframes[i];
@@ -315,61 +319,68 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
           const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
           if (iframeDoc) {
             const iframeVideos = iframeDoc.getElementsByTagName('video');
-            console.log(`[Stream Video Saver] Iframe ${i}: Found ${iframeVideos.length} video element(s)`);
+            console.log(`Iframe ${i}: Found ${iframeVideos.length} video element(s)`);
 
             for (let j = 0; j < iframeVideos.length; j++) {
               const v = iframeVideos[j];
-              console.log(`[Stream Video Saver] Iframe ${i} video element ${j}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}`);
+              console.log(`Iframe ${i} video element ${j}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}`);
               // Accept video even if not fully loaded - we'll wait for it later
               if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
                 video = v;
-                console.log(`[Stream Video Saver] Selected video element from iframe ${i}`);
+                console.log(`Selected video element from iframe ${i}`);
                 break;
-              } else if (v.videoWidth > 0 && v.videoHeight > 0) {
+              }
+
+              if (v.videoWidth > 0 && v.videoHeight > 0) {
                 // Video has dimensions but readyState < 2 - we'll wait for it
                 video = v;
-                console.log(`[Stream Video Saver] Selected video element from iframe ${i} (has dimensions but readyState < 2, will wait)`);
+                console.log(`Selected video element from iframe ${i} (has dimensions but readyState < 2, will wait)`);
                 break;
-              } else if (v.src || v.currentSrc) {
+              }
+
+              if (v.src || v.currentSrc) {
                 // Video has a source but not loaded yet - we'll try waiting for it
                 video = v;
-                console.log(`[Stream Video Saver] Selected video element from iframe ${i} (has source but not loaded, will wait)`);
+                console.log(`Selected video element from iframe ${i} (has source but not loaded, will wait)`);
                 break;
               }
             }
             if (video) break;
           } else {
-            console.log(`[Stream Video Saver] Iframe ${i}: Cannot access contentDocument (likely cross-origin)`);
+            console.log(`Iframe ${i}: Cannot access contentDocument (likely cross-origin)`);
           }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.log(`[Stream Video Saver] Iframe ${i}: Error accessing contentDocument: ${errorMessage}`);
+          console.log(`Iframe ${i}: Error accessing contentDocument: ${errorMessage}`);
         }
       }
     }
 
     if (!video) {
-      console.log('[Stream Video Saver] No video element found in main document or iframes');
+      console.log('No video element found in main document or iframes');
+      console.groupEnd();
       return [];
     }
 
     // Wait for video to load if it's not ready yet
     if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
-      console.log(`[Stream Video Saver] Video not fully loaded yet (readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}), waiting...`);
+      console.log(`Video not fully loaded yet (readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}), waiting...`);
       try {
         await waitForVideoLoad(video, 3000); // Wait up to 3 seconds
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`[Stream Video Saver] Video did not load within timeout: ${errorMessage}`);
+        console.log(`Video did not load within timeout: ${errorMessage}`);
+        console.groupEnd();
         return [];
       }
     }
 
     // Check if video has duration (needed for seeking)
     if (!video.duration || isNaN(video.duration) || !isFinite(video.duration)) {
-      console.log('[Stream Video Saver] Video duration not available, cannot seek to specific timestamps');
+      console.log('Video duration not available, cannot seek to specific timestamps');
       // Fallback to current frame
       const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
+      console.groupEnd();
       return frame ? [frame] : [];
     }
 
@@ -381,14 +392,14 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
         // Clamp timestamp to video duration
         const targetTime = Math.min(Math.max(0, timestamp), video.duration);
 
-        console.log(`[Stream Video Saver] Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
+        console.log(`Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
 
         try {
           await waitForVideoTime(video, targetTime, 10000);
           const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
           if (frame) {
             previewFrames.push(frame);
-            console.log(`[Stream Video Saver] Successfully captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
+            console.log(`✅ Captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
 
             // Send individual frame to background script immediately (if manifestId provided)
             if (manifestId) {
@@ -399,21 +410,21 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
                 frameIndex: previewFrames.length - 1
               } as ExtensionMessage).catch((error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
-                console.log(`[Stream Video Saver] Error sending individual preview frame: ${errorMessage}`);
+                console.log(`Error sending individual preview frame: ${errorMessage}`);
               });
             }
           } else {
-            console.log(`[Stream Video Saver] Failed to capture frame at ${targetTime}s`);
+            console.log(`Failed to capture frame at ${targetTime}s`);
           }
         } catch (timeError) {
           const errorMessage = timeError instanceof Error ? timeError.message : String(timeError);
-          console.log(`[Stream Video Saver] Error waiting for video time ${targetTime}s: ${errorMessage}`);
+          console.log(`Error waiting for video time ${targetTime}s: ${errorMessage}`);
           // Continue with next timestamp
         }
       }
 
       if (previewFrames.length === 0) {
-        console.log('[Stream Video Saver] No frames captured, trying fallback to current frame');
+        console.log('No frames captured, trying fallback to current frame');
         // Fallback to current frame if no frames captured
         const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
         if (frame) {
@@ -421,17 +432,20 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
         }
       }
 
-      console.log(`[Stream Video Saver] Captured ${previewFrames.length} preview frame(s)`);
+      console.log(`✅ Captured ${previewFrames.length} preview frame(s) total`);
+      console.groupEnd();
       return previewFrames;
     } catch (error) {
       // CORS or other error - video might be cross-origin
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`[Stream Video Saver] Could not capture video frames (likely CORS): ${errorMessage}`);
+      console.log(`Could not capture video frames (likely CORS): ${errorMessage}`);
+      console.groupEnd();
       return [];
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Stream Video Saver] Error capturing video frame: ${errorMessage}`);
+    console.error(`Error capturing video frame: ${errorMessage}`);
+    console.groupEnd();
     return [];
   }
 }
@@ -451,23 +465,25 @@ chrome.runtime.onMessage.addListener((
   }
 
   if (message.action === 'getVideoPreview') {
-    console.log('[Stream Video Saver] Content script received getVideoPreview message');
     const manifestId = (message as { manifestId?: string }).manifestId;
+    console.groupCollapsed(`[Stream Video Saver] getVideoPreview (manifestId: ${manifestId || 'none'})`);
 
     // Handle async operation
     (async (): Promise<void> => {
       try {
         const previewUrls = await captureVideoFrame(320, 180, [...PREVIEW_TIMESTAMPS], manifestId);
         if (previewUrls && previewUrls.length > 0) {
-          console.log(`[Stream Video Saver] Content script sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
+          console.log(`Sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
         } else {
-          console.log('[Stream Video Saver] Content script could not capture preview - returning empty array');
+          console.log('Could not capture preview - returning empty array');
         }
         sendResponse({ previewUrls: previewUrls || [] });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[Stream Video Saver] Error capturing preview: ${errorMessage}`);
+        console.error(`Error capturing preview: ${errorMessage}`);
         sendResponse({ previewUrls: [] });
+      } finally {
+        console.groupEnd();
       }
     })();
 
