@@ -28,7 +28,7 @@ ffprobe -v error "${OUTPUT_FILE}" || _error "ffprobe check failed"
 echo "Cleaning up segments..."
 rm -f "${MANIFEST_FILE}"
 [[ -e "${EXT_MAP_FILE}" ]] && rm -f "${EXT_MAP_FILE}"
-rm -f *.ts *.m4s init*.mp4
+rm -f {{SEGMENT_FILES}}
 
 echo
 echo "DONE"

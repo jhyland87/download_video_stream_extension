@@ -1165,22 +1165,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     : (m3u8FileName.replace('.m3u8', '') || 'output');
   const outputFileName = `${videoBaseName}-${scriptTimestamp}.mp4`;
 
-  // Load template from file at runtime
-  const templateUrl = chrome.runtime.getURL('templates/compile_video.sh.template');
-  const templateResponse = await fetch(templateUrl);
-  if (!templateResponse.ok) {
-    throw new Error(`Failed to load template: ${templateResponse.status}`);
-  }
-  let bashScriptContent = await templateResponse.text();
-
-  // Replace template placeholders with actual values
-  bashScriptContent = bashScriptContent
-    .replace('{{MANIFEST_FILE}}', m3u8FileName)
-    .replace('{{OUTPUT_FILE}}', outputFileName);
-
-  zip.file('compile_video.sh', bashScriptContent);
-
-  // Parse m3u8 to get segment URLs
+  // Parse m3u8 to get segment URLs first (needed for template replacement)
   const segmentUrls = parseM3U8(manifest.m3u8Content, manifest.m3u8Url);
 
   if (segmentUrls.length === 0) {
@@ -1195,6 +1180,37 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Only applies unique naming when filenames are duplicated
   const segmentUrlToFilename = createUrlToFilenameMap(segmentUrls, 'segment.ts');
   const initSegmentUrlToFilename = createUrlToFilenameMap(initSegmentUrls, 'init.mp4');
+
+  // Collect all segment filenames for safe cleanup in bash script
+  const allSegmentFilenames: string[] = [];
+  for (const filename of segmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+  for (const filename of initSegmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+
+  // Build safe cleanup command - explicit filenames instead of wildcards
+  // Quote each filename to handle spaces/special characters safely
+  const segmentFilesCleanup = allSegmentFilenames.length > 0
+    ? allSegmentFilenames.map(filename => `"${filename}"`).join(' ')
+    : '';
+
+  // Load template from file at runtime
+  const templateUrl = chrome.runtime.getURL('templates/compile_video.sh.template');
+  const templateResponse = await fetch(templateUrl);
+  if (!templateResponse.ok) {
+    throw new Error(`Failed to load template: ${templateResponse.status}`);
+  }
+  let bashScriptContent = await templateResponse.text();
+
+  // Replace template placeholders with actual values
+  bashScriptContent = bashScriptContent
+    .replace('{{MANIFEST_FILE}}', m3u8FileName)
+    .replace('{{OUTPUT_FILE}}', outputFileName)
+    .replace('{{SEGMENT_FILES}}', segmentFilesCleanup);
+
+  zip.file('compile_video.sh', bashScriptContent);
 
   // Log mapping for debugging
   console.log(`[Stream Video Saver] Created mapping for ${segmentUrlToFilename.size} regular segments and ${initSegmentUrlToFilename.size} init segments`);
