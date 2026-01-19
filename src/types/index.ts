@@ -92,7 +92,8 @@ export type MessageAction =
   | 'previewUpdated'
   | 'previewFrameReady'
   | 'segmentDownloaded'
-  | 'm3u8ResponseCaptured';
+  | 'm3u8ResponseCaptured'
+  | 'm3u8FetchError';
 
 /**
  * Base message interface
@@ -298,6 +299,13 @@ export type ExtensionResponse =
   | GetDownloadStatusResponse
   | SuccessResponse
   | { error: string };
+
+// Re-export popup component types
+export type {
+  PreviewImageProps,
+  ManifestItemProps,
+  ProgressBarProps
+} from './popup.js';
 
 // Re-export type guards from guards.ts for convenience
 export {

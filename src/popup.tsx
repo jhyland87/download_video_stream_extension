@@ -22,7 +22,10 @@ import type {
   ManifestCapturedMessage,
   PreviewUpdatedMessage,
   M3U8FetchErrorMessage,
-  DownloadProgress
+  DownloadProgress,
+  PreviewImageProps,
+  ManifestItemProps,
+  ProgressBarProps
 } from './types/index.js';
 
 // CRITICAL: This should appear in console immediately when script loads
@@ -84,10 +87,6 @@ function extractFilenameFromUrl(url: string): string {
   }
 }
 
-interface PreviewImageProps {
-  previewUrls: string[];
-}
-
 /**
  * Component for displaying and cycling through preview images on hover.
  */
@@ -147,12 +146,6 @@ const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
   );
 };
 
-interface ManifestItemProps {
-  manifest: ManifestSummary;
-  onDownload: (manifestId: string) => void;
-  onClear: (manifestId: string) => void;
-}
-
 /**
  * Component for displaying a single manifest item.
  */
@@ -206,11 +199,6 @@ const ManifestItem = ({ manifest, onDownload, onClear }: ManifestItemProps) => {
     </div>
   );
 };
-
-interface ProgressBarProps {
-  progress: DownloadProgress | null;
-  onCancel: () => void;
-}
 
 /**
  * Component for displaying download progress.
