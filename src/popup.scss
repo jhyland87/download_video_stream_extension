@@ -1,0 +1,198 @@
+// Popup styles for Stream Video Saver extension
+
+body {
+  width: 350px;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  margin: 0;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 15px 0;
+  color: #333;
+}
+
+.status {
+  padding: 10px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  font-size: 14px;
+
+  &.active {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+}
+
+.button {
+  width: 100%;
+  padding: 12px;
+  margin: 5px 0;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+
+  &.primary {
+    background: #1976d2;
+    color: white;
+
+    &:hover {
+      background: #1565c0;
+    }
+  }
+
+  &.secondary {
+    background: #f5f5f5;
+    color: #333;
+
+    &:hover {
+      background: #e0e0e0;
+    }
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.progress {
+  margin-bottom: 15px;
+  display: none;
+
+  &.active {
+    display: block;
+  }
+}
+
+.progress-bar {
+  width: 100%;
+  height: 20px;
+  background: #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #4caf50;
+  transition: width 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 12px;
+}
+
+.info {
+  font-size: 12px;
+  color: #666;
+  margin-top: 10px;
+  font-family: monospace;
+  white-space: pre;
+}
+
+.error {
+  color: #d32f2f;
+  font-size: 12px;
+  margin-top: 10px;
+  display: none;
+
+  &.show {
+    display: block;
+  }
+}
+
+.manifest-item {
+  padding: 10px;
+  background: #e3f2fd;
+  border-radius: 4px;
+  margin-bottom: 10px;
+  border: 1px solid #90caf9;
+  display: flex;
+  gap: 10px;
+}
+
+.manifest-item-preview {
+  flex-shrink: 0;
+}
+
+.manifest-preview-image {
+  width: 120px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #000;
+}
+
+.manifest-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.manifest-item-header {
+  font-weight: bold;
+  margin-bottom: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.manifest-item-name {
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+  margin-bottom: 5px;
+}
+
+.manifest-item-info {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.manifest-item-actions {
+  display: flex;
+  gap: 5px;
+
+  button {
+    flex: 1;
+    padding: 6px;
+    font-size: 11px;
+    margin: 0;
+  }
+
+  .btn-small {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+}
+
+// Specific button styles
+.btn-clear-manifest {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.btn-download-zip {
+  font-size: 11px;
+  padding: 6px;
+}
+
+.cancel-download-btn {
+  margin-top: 10px;
+}
+
+.clear-all-btn {
+  margin-top: 10px;
+}
+
+.manifest-history {
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 15px;
+}

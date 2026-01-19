@@ -1,5 +1,12 @@
 import esbuild from 'esbuild';
 import { execSync } from 'child_process';
+import { writeFileSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import * as sass from 'sass';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -15,12 +22,29 @@ const baseConfig = {
 
 async function build() {
   try {
-    // Build popup script
+    // Ensure dist directory exists
+    const distDir = join(__dirname, 'dist');
+    mkdirSync(distDir, { recursive: true });
+
+    // Compile SCSS to CSS
+    const scssResult = sass.compile(join(__dirname, 'src', 'popup.scss'), {
+      style: isProduction ? 'compressed' : 'expanded',
+    });
+    
+    // Write compiled CSS to dist
+    const cssPath = join(__dirname, 'dist', 'popup.css');
+    writeFileSync(cssPath, scssResult.css);
+
+    // Build popup script (React app)
     await esbuild.build({
       ...baseConfig,
-      entryPoints: ['src/popup.ts'],
+      entryPoints: ['src/popup.tsx'],
       outfile: 'dist/popup.js',
       globalName: 'PopupScript',
+      jsx: 'automatic', // Use React 17+ JSX transform
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(isProduction ? 'production' : 'development'),
+      },
     });
 
     // Build content script
