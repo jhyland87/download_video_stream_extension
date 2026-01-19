@@ -68,12 +68,12 @@ const requestHeadersMap = new Map<string, chrome.webRequest.HttpHeader[]>();
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details: chrome.webRequest.WebRequestHeadersDetails) => {
     if (M3U8_PATTERN.test(details.url)) {
-      console.groupCollapsed(`[Stream Video Saver] Capturing headers for m3u8: ${details.url}`);
-      console.log(`Request ID: ${details.requestId}`);
+      //console.groupCollapsed(`[Stream Video Saver] Capturing headers for m3u8: ${details.url}`);
+      //console.log(`Request ID: ${details.requestId}`);
       if (details.requestHeaders) {
-        console.log(`Headers (${details.requestHeaders.length}):`);
+        //console.log(`Headers (${details.requestHeaders.length}):`);
         for (const header of details.requestHeaders) {
-          console.log(`  ${header.name}: ${header.value || '(empty)'}`);
+          //console.log(`  ${header.name}: ${header.value || '(empty)'}`);
         }
         requestHeadersMap.set(details.requestId, details.requestHeaders);
         // Clean up after 5 minutes to prevent memory leaks
@@ -93,18 +93,15 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 // Monitor completed requests and process m3u8 files
 chrome.webRequest.onCompleted.addListener(
   (details: chrome.webRequest.WebResponseDetails) => {
-    // Log all m3u8 requests for debugging
-    if (M3U8_PATTERN.test(details.url)) {
-      console.log(`[Stream Video Saver] webRequest.onCompleted: ${details.url} (status: ${details.statusCode}, tabId: ${details.tabId}, requestId: ${details.requestId})`);
-    }
+    // Silently process m3u8 requests (only log when a new manifest is found)
     handleRequestCompleted(details as unknown as chrome.webRequest.WebRequestBodyDetails);
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders']
 );
 
-console.log('[Stream Video Saver] ✅ Continuous monitoring active');
-console.log(`[Stream Video Saver] M3U8_PATTERN: ${M3U8_PATTERN}`);
+//console.log('[Stream Video Saver] ✅ Continuous monitoring active');
+//console.log(`[Stream Video Saver] M3U8_PATTERN: ${M3U8_PATTERN}`);
 
 /**
  * Handles the 'getStatus' action by filtering and deduplicating manifests.
@@ -156,8 +153,8 @@ function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): v
     // Sort by capturedAt in descending order (most recent first)
     .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
 
-  console.log(`[Stream Video Saver] getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
-  console.log(`[Stream Video Saver] Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
+  //console.log(`[Stream Video Saver] getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
+  //console.log(`[Stream Video Saver] Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
   const response: GetStatusResponse = {
     manifestHistory: filtered
   };
@@ -511,7 +508,7 @@ chrome.runtime.onMessage.addListener((
   _sender: chrome.runtime.MessageSender,
   sendResponse: (response: ExtensionResponse) => void
 ): boolean => {
-  console.log(`[Stream Video Saver] Background received message: ${message.action}`);
+  //console.log(`[Stream Video Saver] Background received message: ${message.action}`);
 
   switch (message.action) {
     case 'getStatus':
@@ -902,16 +899,12 @@ const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
 async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyDetails & { requestHeaders?: chrome.webRequest.HttpHeader[] }): Promise<void> {
   const url = details.url;
 
-  console.log(`[Stream Video Saver] handleRequestCompleted called for: ${url}`);
-
   // Check if it's an m3u8 file
   if (!M3U8_PATTERN.test(url)) {
     return;
   }
 
   const urlWithoutQuery = url.split('?')[0];
-
-  console.log(`[Stream Video Saver] ✓ M3U8 file detected: ${url} (pattern matched)`);
 
   // Skip if we've processed this URL recently (cooldown period)
   if (recentlyProcessed.has(urlWithoutQuery)) {
@@ -925,8 +918,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
   });
 
   if (existingManifest) {
-    // Already have it, skip processing
-    console.log(`[Stream Video Saver] Skipping ${url} - already in history`);
+    // Already have it, skip processing silently
     return;
   }
 
@@ -940,27 +932,37 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
 
   try {
 
-    // Fetch the m3u8 with headers from the original request
+    // Fetch the m3u8 using proper Fetch API options instead of manually copying headers
     // Headers are captured in onBeforeSendHeaders and stored by requestId
     const headers: Record<string, string> = {};
 
     // Look up the captured headers for this request
     const capturedHeaders = requestHeadersMap.get(details.requestId);
+    let fetchMode: RequestMode = 'cors'; // Default to CORS for cross-origin requests
+
     if (capturedHeaders) {
       console.log(`[Stream Video Saver] Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
-      // Copy important headers from the original request
+
+      // Determine fetch mode from Sec-Fetch-Mode header (if present)
+      const secFetchMode = capturedHeaders.find(h => h.name.toLowerCase() === 'sec-fetch-mode');
+      if (secFetchMode?.value) {
+        const mode = secFetchMode.value.toLowerCase();
+        if (mode === 'cors' || mode === 'no-cors' || mode === 'same-origin' || mode === 'navigate') {
+          fetchMode = mode as RequestMode;
+          console.log(`[Stream Video Saver] Using fetch mode from Sec-Fetch-Mode: ${fetchMode}`);
+        }
+      }
+
+      // Only copy headers that can be manually set (exclude sec-* headers)
       for (const header of capturedHeaders) {
         const name = header.name.toLowerCase();
-        // Include headers that servers often check for authentication/origin
+        // Include headers that can be manually set (exclude sec-* headers)
         if (
-          name === 'origin' ||
-          name === 'referer' ||
           name === 'user-agent' ||
           name === 'accept' ||
           name === 'accept-language' ||
           name === 'accept-encoding' ||
-          name.startsWith('sec-') ||
-          name.startsWith('x-') ||
+          (name.startsWith('x-') && !name.startsWith('sec-')) ||
           name === 'authorization'
         ) {
           headers[header.name] = header.value || '';
@@ -974,31 +976,22 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     }
 
     console.log(`[Stream Video Saver] Fetching m3u8 content from: ${url}`);
-    console.log(`[Stream Video Saver] Total headers to send: ${Object.keys(headers).length}`);
 
-    // Log key headers for debugging
-    const keyHeaders = ['Origin', 'origin', 'Referer', 'referer', 'Sec-Fetch-Site', 'Sec-Ch-Ua'];
-    for (const key of keyHeaders) {
-      if (headers[key]) {
-        console.log(`[Stream Video Saver] Header ${key}: ${headers[key].substring(0, 100)}`);
-      }
-    }
-
-    // Always include headers if we have any, otherwise use minimal defaults
+    // Build fetch options using proper Fetch API methods
     const fetchOptions: RequestInit = {
+      mode: fetchMode, // Use CORS mode (or detected mode) - this handles sec-* headers automatically
       credentials: 'include',  // Important: include cookies for authentication
-      referrerPolicy: 'origin',
-      referrer: 'origin'
+      referrerPolicy: 'origin', // Set referrer policy
+      cache: 'no-cache' // Don't use cached responses
     };
 
+    // Add manually settable headers
     if (Object.keys(headers).length > 0) {
       fetchOptions.headers = headers;
-      console.log(`[Stream Video Saver] Using ${Object.keys(headers).length} headers from original request`);
-    } else {
-      console.warn(`[Stream Video Saver] WARNING: No headers available! This may cause 403 errors.`);
+      console.log(`[Stream Video Saver] Using ${Object.keys(headers).length} manually settable headers from original request`);
     }
 
-    console.log(`[Stream Video Saver] Fetch options: credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
+    console.log(`[Stream Video Saver] Fetch options: mode=${fetchOptions.mode}, credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
     // Fetch the m3u8 content with the same headers as the original request
     const response = await fetch(url, fetchOptions);
 
@@ -1025,6 +1018,9 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
 
     // Process the fetched content
     await processM3U8Content(url, text, details);
+
+    // Only log when a new manifest is successfully added
+    console.log(`[Stream Video Saver] ✓ New manifest captured: ${url}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorMsg = `Error fetching m3u8 file: ${errorMessage}`;
@@ -1156,14 +1152,16 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Extract m3u8 filename (used for ZIP file and bash script)
   const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
 
-  // Create and add bash script for converting to MP4
-  const scriptTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  // Generate timestamp once - will be used for both ZIP and MP4 filenames
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
   // Use title if available, otherwise fall back to m3u8 filename
   const videoBaseName = manifest.title
     ? sanitizeFilename(manifest.title)
     : (m3u8FileName.replace('.m3u8', '') || 'output');
-  const outputFileName = `${videoBaseName}-${scriptTimestamp}.mp4`;
+
+  // MP4 filename (uses same timestamp as ZIP)
+  const outputFileName = `${videoBaseName}-${timestamp}.mp4`;
 
   // Parse m3u8 to get segment URLs first (needed for template replacement)
   const segmentUrls = parseM3U8(manifest.m3u8Content, manifest.m3u8Url);
@@ -1593,6 +1591,25 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   // Calculate total bytes downloaded (approximation based on downloaded blobs)
   totalBytes = downloadedBytes;
 
+  // Log summary before ZIP generation
+  console.groupCollapsed('[Stream Video Saver] Download summary before ZIP generation');
+  console.log(`Total segments: ${total}`);
+  console.log(`Successfully downloaded: ${downloaded}`);
+  console.log(`Failed segments: ${failedSegments.length}`);
+  console.log(`Failed init segments: ${failedInitSegments.length}`);
+  console.log(`Total bytes downloaded: ${downloadedBytes}`);
+
+  // Count files in ZIP
+  let fileCount = 0;
+  zip.forEach(() => { fileCount++; });
+  console.log(`Files in ZIP before generation: ${fileCount}`);
+  console.groupEnd();
+
+  // Warn if no segments were downloaded
+  if (downloaded === 0) {
+    console.error('[Stream Video Saver] WARNING: No segments were successfully downloaded! ZIP will only contain m3u8 and bash script.');
+  }
+
   // Generate zip file - notify user that ZIP creation is starting
   notifyDownloadProgress(downloadId, {
     downloaded,
@@ -1605,10 +1622,24 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Generate ZIP as ArrayBuffer (service workers don't support Blob/URL.createObjectURL)
   // This can take a while for large files
-  const zipArrayBuffer = await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+  console.log('[Stream Video Saver] Generating ZIP file...');
+  let zipArrayBuffer: ArrayBuffer;
+  try {
+    zipArrayBuffer = await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[Stream Video Saver] ERROR: Failed to generate ZIP: ${errorMessage}`);
+    throw new Error(`Failed to generate ZIP file: ${errorMessage}`);
+  }
   const zipSize = zipArrayBuffer.byteLength;
+  console.log(`[Stream Video Saver] ZIP generated successfully: ${zipSize} bytes (${(zipSize / 1024 / 1024).toFixed(2)} MB)`);
 
-  // Update progress with ZIP size
+  // Validate ZIP size
+  if (zipSize === 0) {
+    throw new Error('Generated ZIP file is empty (0 bytes). This indicates no files were added to the ZIP.');
+  }
+
+  // Update progress with ZIP size - ZIP generation is complete, show success color
   notifyDownloadProgress(downloadId, {
     downloaded,
     total,
@@ -1617,88 +1648,335 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     totalBytes,
     downloadSpeed: 0,
     zipSize
-  });
+  }, true); // zipGenerated = true
 
   // Check if cancelled after ZIP generation
   if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
     throw new Error('Download cancelled');
   }
 
-  // Keep status as 'creating_zip' during base64 conversion as well
-  // This is still part of preparing the file for download
-  // Convert ArrayBuffer to base64 data URL for chrome.downloads API
-  // Use chunked conversion to avoid stack overflow with large files
-  const bytes = new Uint8Array(zipArrayBuffer);
-  let binary = '';
-  const chunkSize = 8192; // Process in 8KB chunks
-  const totalChunks = Math.ceil(bytes.length / chunkSize);
-  let processedChunks = 0;
+  // Chrome has a ~2MB limit for data URLs, so for large files we need a different approach
+  // For files > 50MB, we'll use a content script to create a Blob URL
+  const MAX_DATA_URL_SIZE = 50 * 1024 * 1024; // 50MB limit for data URLs
 
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    // Check for cancellation periodically during conversion
-    if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-      throw new Error('Download cancelled');
-    }
-
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, Array.from(chunk));
-    processedChunks++;
-
-    // Update progress periodically during base64 conversion (every 10% or every 100 chunks)
-    // Keep the zipSize and totalBytes in the progress during conversion
-    if (processedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0 || processedChunks === totalChunks) {
-      notifyDownloadProgress(downloadId, {
-        downloaded,
-        total,
-        status: 'creating_zip',
-        downloadedBytes,
-        totalBytes,
-        downloadSpeed: 0,
-        zipSize
-      });
-    }
-  }
-  const base64 = btoa(binary);
-  const dataUrl = `data:application/zip;base64,${base64}`;
-
-  // Create download using chrome.downloads API
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-
-  // Use title if available, otherwise fall back to m3u8 filename
+  // Use the same timestamp that was used for the MP4 filename in the bash script
+  // This ensures ZIP and MP4 have matching timestamps
+  // Note: timestamp is already defined earlier in the function (line 1156)
   const zipBaseName = manifest.title
     ? sanitizeFilename(manifest.title)
     : (manifest.m3u8FileName.replace('.m3u8', '') || 'video');
+
+  // Use the same timestamp variable that was used for outputFileName
   const zipFileName = `${zipBaseName}-${timestamp}.zip`;
 
-  chrome.downloads.download({
-    url: dataUrl,
-    filename: zipFileName,
-    saveAs: true
-  }, (_chromeDownloadId?: number) => {
-    if (chrome.runtime.lastError) {
-      const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-      notifyDownloadError(downloadId, errorMessage);
-      activeDownloads.delete(downloadId);
-    } else {
-      notifyDownloadProgress(downloadId, {
-        downloaded,
-        total,
-        status: 'complete',
-        downloadedBytes,
-        totalBytes,
-        downloadSpeed: 0,
-        zipSize
-      });
-      // Clean up after a short delay
-      setTimeout(() => {
-        activeDownloads.delete(downloadId);
-        // Clear badge if no active downloads remain
-        if (activeDownloads.size === 0) {
-          chrome.action.setBadgeText({ text: '' });
-        }
-      }, 2000);
+  if (zipSize > MAX_DATA_URL_SIZE) {
+    // For large files, send chunks via sendMessage to content script
+    console.log(`[Stream Video Saver] ZIP file is large (${(zipSize / 1024 / 1024).toFixed(2)} MB), sending chunks to content script`);
+
+    // Find the tab where the manifest was captured
+    const tabId = manifest.tabId;
+    if (!tabId || tabId < 0) {
+      throw new Error('Cannot download large ZIP: No tab ID available for chunk transfer');
     }
-  });
+
+    try {
+
+      // Use chrome.storage.local to store the ArrayBuffer
+      // Note: chrome.storage has a 10MB per item limit, so we'll need to chunk it
+      // For now, let's try using IndexedDB via a content script
+      // Actually, let's try sending it in chunks if it's too large
+      const MAX_MESSAGE_SIZE = 50 * 1024 * 1024; // 50MB limit for sendMessage
+
+      if (zipSize > MAX_MESSAGE_SIZE) {
+        // File is too large for a single sendMessage, send ArrayBuffer in chunks
+        // sendMessage has ~60-100MB limit per message, so we'll send 40MB chunks
+        const CHUNK_SIZE = 40 * 1024 * 1024; // 40MB chunks (under sendMessage limit)
+        const totalChunks = Math.ceil(zipArrayBuffer.byteLength / CHUNK_SIZE);
+
+        console.log(`[Stream Video Saver] Sending ZIP to content script in ${totalChunks} chunk(s)...`);
+
+        // Send chunks to content script sequentially
+        // Convert ArrayBuffer chunks to base64 strings (ArrayBuffers are transferred, not copied)
+        const bytes = new Uint8Array(zipArrayBuffer);
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, bytes.length);
+          const chunk = bytes.subarray(start, end);
+
+          // Convert chunk to base64 string (this can be copied, not transferred)
+          let binary = '';
+          const chunkSize = 8192; // Process in 8KB sub-chunks
+          for (let j = 0; j < chunk.length; j += chunkSize) {
+            const subChunk = chunk.subarray(j, j + chunkSize);
+            binary += String.fromCharCode.apply(null, Array.from(subChunk));
+          }
+          const chunkBase64 = btoa(binary);
+
+          await chrome.tabs.sendMessage(tabId, {
+            action: 'receiveZipChunk',
+            chunkIndex: i,
+            totalChunks: totalChunks,
+            chunkDataBase64: chunkBase64, // Send as base64 string instead of ArrayBuffer
+            mimeType: 'application/zip',
+            filename: zipFileName
+          });
+
+          // Update badge to show chunk sending progress (ZIP is already generated, show success color)
+          if (i % Math.max(1, Math.floor(totalChunks / 10)) === 0 || i === totalChunks - 1) {
+            const sendingProgress = {
+              downloaded: i + 1,
+              total: totalChunks,
+              status: 'creating_zip' as DownloadStatus,
+              downloadedBytes,
+              totalBytes,
+              downloadSpeed: 0,
+              zipSize
+            };
+            notifyDownloadProgress(downloadId, sendingProgress, true);
+          }
+        }
+
+        // Request content script to create Blob URL
+        console.log(`[Stream Video Saver] All chunks sent, requesting content script to create Blob URL...`);
+        const response = await chrome.tabs.sendMessage(tabId, {
+          action: 'createBlobUrlFromChunks',
+          totalChunks: totalChunks,
+          mimeType: 'application/zip',
+          filename: zipFileName
+        });
+
+        if (!response) {
+          throw new Error('Failed to create Blob URL from chunks: No response from content script');
+        }
+
+        if (response.error) {
+          throw new Error(`Failed to create Blob URL from chunks: ${response.error}`);
+        }
+
+        // Handle different response types
+        if (response.success && response.method === 'anchor') {
+          // Content script triggered download via anchor element (for large files)
+          console.log(`[Stream Video Saver] Download triggered via anchor element in content script`);
+
+          // Update progress to complete
+          notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'complete',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed: 0,
+            zipSize
+          });
+          // Clean up after a short delay
+          setTimeout(() => {
+            activeDownloads.delete(downloadId);
+            // Clear badge if no active downloads remain
+            if (activeDownloads.size === 0) {
+              chrome.action.setBadgeText({ text: '' });
+            }
+          }, 2000);
+
+          // Request content script to clean up chunks
+          chrome.tabs.sendMessage(tabId, {
+            action: 'cleanupZipChunks',
+            totalChunks: totalChunks
+          }).catch(() => {
+            // Ignore errors during cleanup
+          });
+          return;
+        }
+
+        if (!response.dataUrl) {
+          throw new Error('Failed to create data URL from chunks: No dataUrl in response');
+        }
+
+        const dataUrl = response.dataUrl;
+        console.log(`[Stream Video Saver] Received data URL from content script (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
+
+        // Use the data URL for download (background script has access to chrome.downloads)
+        // Clear badge when download starts
+        chrome.action.setBadgeText({ text: '' });
+
+        chrome.downloads.download({
+          url: dataUrl,
+          filename: zipFileName,
+          saveAs: true
+        }, (_chromeDownloadId?: number) => {
+          // Request content script to clean up chunks after download starts
+          chrome.tabs.sendMessage(tabId, {
+            action: 'cleanupZipChunks',
+            totalChunks: totalChunks
+          }).catch(() => {
+            // Ignore errors during cleanup
+          });
+
+          if (chrome.runtime.lastError) {
+            const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
+            console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+            notifyDownloadError(downloadId, errorMessage);
+            activeDownloads.delete(downloadId);
+          } else {
+            notifyDownloadProgress(downloadId, {
+              downloaded,
+              total,
+              status: 'complete',
+              downloadedBytes,
+              totalBytes,
+              downloadSpeed: 0,
+              zipSize
+            });
+            // Clean up after a short delay
+            setTimeout(() => {
+              activeDownloads.delete(downloadId);
+              // Clear badge if no active downloads remain
+              if (activeDownloads.size === 0) {
+                chrome.action.setBadgeText({ text: '' });
+              }
+            }, 2000);
+          }
+        });
+      } else {
+        // File is small enough for sendMessage
+        console.log(`[Stream Video Saver] Sending ${(zipArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB ArrayBuffer to content script...`);
+        const response = await chrome.tabs.sendMessage(tabId, {
+          action: 'createBlobUrl',
+          arrayBuffer: zipArrayBuffer,
+          mimeType: 'application/zip'
+        });
+
+        if (!response || !response.blobUrl) {
+          throw new Error('Failed to create Blob URL via content script: No response or missing blobUrl');
+        }
+
+        const blobUrl = response.blobUrl;
+        console.log(`[Stream Video Saver] Created Blob URL: ${blobUrl.substring(0, 100)}...`);
+
+        // Use the Blob URL for download
+        // Clear badge when download starts
+        chrome.action.setBadgeText({ text: '' });
+
+        chrome.downloads.download({
+          url: blobUrl,
+          filename: zipFileName,
+          saveAs: true
+        }, (_chromeDownloadId?: number) => {
+          if (chrome.runtime.lastError) {
+            const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
+            console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+            notifyDownloadError(downloadId, errorMessage);
+            activeDownloads.delete(downloadId);
+          } else {
+            notifyDownloadProgress(downloadId, {
+              downloaded,
+              total,
+              status: 'complete',
+              downloadedBytes,
+              totalBytes,
+              downloadSpeed: 0,
+              zipSize
+            });
+            // Clean up after a short delay
+            setTimeout(() => {
+              activeDownloads.delete(downloadId);
+              // Clear badge if no active downloads remain
+              if (activeDownloads.size === 0) {
+                chrome.action.setBadgeText({ text: '' });
+              }
+            }, 2000);
+          }
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Stream Video Saver] Failed to create Blob URL: ${errorMessage}`);
+      throw new Error(`Failed to prepare large ZIP for download (${(zipSize / 1024 / 1024).toFixed(2)} MB): ${errorMessage}`);
+    }
+  } else {
+    // For smaller files, use data URL
+    console.log(`[Stream Video Saver] Converting ZIP to base64 data URL (${(zipSize / 1024 / 1024).toFixed(2)} MB)...`);
+
+    // Convert ArrayBuffer to base64 data URL for chrome.downloads API
+    // Use chunked conversion to avoid stack overflow with large files
+    const bytes = new Uint8Array(zipArrayBuffer);
+    let binary = '';
+    const chunkSize = 8192; // Process in 8KB chunks
+    const totalChunks = Math.ceil(bytes.length / chunkSize);
+    let processedChunks = 0;
+
+    try {
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        // Check for cancellation periodically during conversion
+        if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+          throw new Error('Download cancelled');
+        }
+
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, Array.from(chunk));
+        processedChunks++;
+
+        // Update progress periodically during base64 conversion (every 10% or every 100 chunks)
+        // Keep the zipSize and totalBytes in the progress during conversion
+        if (processedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0 || processedChunks === totalChunks) {
+          notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'creating_zip',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed: 0,
+            zipSize
+          });
+        }
+      }
+
+      console.log(`[Stream Video Saver] Converting ${binary.length} character binary string to base64...`);
+      const base64 = btoa(binary);
+      console.log(`[Stream Video Saver] Base64 conversion complete: ${base64.length} characters`);
+
+      const dataUrl = `data:application/zip;base64,${base64}`;
+      console.log(`[Stream Video Saver] Data URL created: ${dataUrl.length} characters`);
+
+      // Create download using chrome.downloads API
+      // Clear badge when download starts
+      chrome.action.setBadgeText({ text: '' });
+
+      chrome.downloads.download({
+        url: dataUrl,
+        filename: zipFileName,
+        saveAs: true
+      }, (_chromeDownloadId?: number) => {
+        if (chrome.runtime.lastError) {
+          const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
+          console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+          notifyDownloadError(downloadId, errorMessage);
+          activeDownloads.delete(downloadId);
+        } else {
+          notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'complete',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed: 0,
+            zipSize
+          });
+          // Clean up after a short delay
+          setTimeout(() => {
+            activeDownloads.delete(downloadId);
+            // Clear badge if no active downloads remain
+            if (activeDownloads.size === 0) {
+              chrome.action.setBadgeText({ text: '' });
+            }
+          }, 2000);
+        }
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Stream Video Saver] Error during base64 conversion: ${errorMessage}`);
+      throw new Error(`Failed to convert ZIP to data URL: ${errorMessage}`);
+    }
+  }
 }
 
 /**
@@ -1784,16 +2062,36 @@ function modifyM3U8ForLocalFiles(content: string, baseUrl: string, urlToFilename
 /**
  * Updates the extension badge to show download progress.
  * @param progress - Progress information object
+ * @param zipGenerated - Whether ZIP generation has completed (for success color)
+ * @param hasError - Whether there was an error (for error color)
  */
-function updateBadge(progress: DownloadProgress): void {
+function updateBadge(progress: DownloadProgress, zipGenerated: boolean = false, hasError: boolean = false): void {
   if (progress.status === 'complete' || progress.status === 'cancelled') {
     // Clear badge when download is complete or cancelled
     chrome.action.setBadgeText({ text: '' });
-  } else {
-    // Show percentage on badge
+  } else if (hasError) {
+    // Show error indicator
+    chrome.action.setBadgeText({ text: 'ERR' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f44336' }); // Red for errors
+  } else if (progress.status === 'creating_zip') {
+    if (zipGenerated && progress.zipSize) {
+      // ZIP generation completed successfully - show success color
+      chrome.action.setBadgeText({ text: 'ZIP' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4caf50' }); // Green for success
+    } else {
+      // Still creating ZIP - show orange
+      chrome.action.setBadgeText({ text: 'ZIP' });
+      chrome.action.setBadgeBackgroundColor({ color: '#ff9800' }); // Orange for zipping
+    }
+  } else if (progress.status === 'downloading') {
+    // Show percentage on badge during segment download
     const percent = Math.round((progress.downloaded / progress.total) * 100);
     chrome.action.setBadgeText({ text: `${percent}%` });
-    chrome.action.setBadgeBackgroundColor({ color: '#4caf50' });
+    chrome.action.setBadgeBackgroundColor({ color: '#4caf50' }); // Green for downloading
+  } else {
+    // Default: show status text
+    chrome.action.setBadgeText({ text: progress.status.substring(0, 4).toUpperCase() });
+    chrome.action.setBadgeBackgroundColor({ color: '#2196f3' }); // Blue for other statuses
   }
 }
 
@@ -1801,10 +2099,11 @@ function updateBadge(progress: DownloadProgress): void {
  * Sends download progress update to the popup and updates the extension badge.
  * @param downloadId - The ID of the download
  * @param progress - Progress information object
+ * @param zipGenerated - Whether ZIP generation has completed (for success color)
  */
-function notifyDownloadProgress(downloadId: string, progress: DownloadProgress): void {
+function notifyDownloadProgress(downloadId: string, progress: DownloadProgress, zipGenerated: boolean = false): void {
   // Update extension badge
-  updateBadge(progress);
+  updateBadge(progress, zipGenerated, false);
 
   // Send message to popup
   chrome.runtime.sendMessage({
@@ -1817,13 +2116,20 @@ function notifyDownloadProgress(downloadId: string, progress: DownloadProgress):
 }
 
 /**
- * Sends download error notification to the popup and clears the badge.
+ * Sends download error notification to the popup and updates the badge.
  * @param downloadId - The ID of the download that failed
  * @param error - Error message describing what went wrong
  */
 function notifyDownloadError(downloadId: string, error: string): void {
-  // Clear badge on error
-  chrome.action.setBadgeText({ text: '' });
+  // Show error badge
+  const download = activeDownloads.get(downloadId);
+  if (download) {
+    updateBadge(download.progress, false, true);
+  } else {
+    // No download state, show generic error badge
+    chrome.action.setBadgeText({ text: 'ERR' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f44336' }); // Red for errors
+  }
 
   // Send message to popup
   chrome.runtime.sendMessage({

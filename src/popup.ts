@@ -200,7 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
    * Shows empty state if no manifests are available.
    */
   function renderManifestHistory(manifests: ManifestSummary[]): void {
-    console.log(`[Stream Video Saver] renderManifestHistory called with ${manifests?.length ?? 0} manifests`);
+    //console.log(`[Stream Video Saver] renderManifestHistory called with ${manifests?.length ?? 0} manifests`);
 
     if (!manifestHistoryDiv || !statusDiv || !clearAllBtn) {
       console.error('[Stream Video Saver] DOM elements not found!');
@@ -262,7 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Generate preview image HTML if available
       const hasPreview = !!manifest.previewUrls && manifest.previewUrls.length > 0;
-      console.log(`[Stream Video Saver] Rendering manifest ${manifest.id}: hasPreview=${hasPreview}, previewUrls count=${manifest.previewUrls?.length || 0}`);
+      //console.log(`[Stream Video Saver] Rendering manifest ${manifest.id}: hasPreview=${hasPreview}, previewUrls count=${manifest.previewUrls?.length || 0}`);
       const previewHtml = hasPreview && manifest.previewUrls
         ? `<div class="manifest-item-preview" data-preview-urls='${escapeHtml(JSON.stringify(manifest.previewUrls))}'>
              <img src="${escapeHtml(manifest.previewUrls[0])}" alt="Video preview" class="manifest-preview-image" data-current-index="0" onerror="console.error('[Stream Video Saver] Preview image failed to load for manifest ${escapeHtml(manifest.id)}')" />
@@ -289,7 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }).join('');
 
     manifestHistoryDiv.innerHTML = html;
-    console.log(`[Stream Video Saver] Rendered ${manifests.length} manifest items`);
+    //console.log(`[Stream Video Saver] Rendered ${manifests.length} manifest items`);
 
     // Attach hover event listeners to all preview images for frame cycling
     const previewImages = manifestHistoryDiv.querySelectorAll('.manifest-preview-image') as NodeListOf<HTMLImageElement>;
@@ -353,13 +353,13 @@ document.addEventListener('DOMContentLoaded', () => {
    * Fetches manifest history and re-renders the UI.
    */
   function updateStatus(): void {
-    console.log('[Stream Video Saver] updateStatus() called - sending getStatus message');
+    //console.log('[Stream Video Saver] updateStatus() called - sending getStatus message');
 
     try {
       chrome.runtime.sendMessage({ action: 'getStatus' } as ExtensionMessage, (response: ExtensionResponse) => {
-        console.log('[Stream Video Saver] getStatus callback invoked');
-        console.log(`[Stream Video Saver] chrome.runtime.lastError: ${chrome.runtime.lastError?.message ?? 'none'}`);
-        console.log(`[Stream Video Saver] response:`, response);
+        //console.log('[Stream Video Saver] getStatus callback invoked');
+        //console.log(`[Stream Video Saver] chrome.runtime.lastError: ${chrome.runtime.lastError?.message ?? 'none'}`);
+        //console.log(`[Stream Video Saver] response:`, response);
 
         if (chrome.runtime.lastError) {
           console.error('[Stream Video Saver] Error getting status:', chrome.runtime.lastError);
@@ -369,12 +369,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (response && 'manifestHistory' in response) {
           const statusResponse = response as GetStatusResponse;
-          console.log(`[Stream Video Saver] Rendering ${statusResponse.manifestHistory.length} manifests`);
-          console.log(`[Stream Video Saver] Manifest data:`, statusResponse.manifestHistory);
+          //console.log(`[Stream Video Saver] Rendering ${statusResponse.manifestHistory.length} manifests`);
+          //console.log(`[Stream Video Saver] Manifest data:`, statusResponse.manifestHistory);
           renderManifestHistory(statusResponse.manifestHistory);
         } else {
-          console.log('[Stream Video Saver] No manifests in response, rendering empty list');
-          console.log('[Stream Video Saver] Full response object:', response);
+          //console.log('[Stream Video Saver] No manifests in response, rendering empty list');
+          //console.log('[Stream Video Saver] Full response object:', response);
           renderManifestHistory([]);
         }
       });
@@ -590,13 +590,13 @@ document.addEventListener('DOMContentLoaded', () => {
       // Preview frames are ready - update the specific manifest item
       const previewMessage = message as PreviewUpdatedMessage;
       console.log(`[Stream Video Saver] Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
-      
+
       // Update the specific manifest item's preview in the UI
       const manifestItem = document.querySelector(`[data-manifest-id="${previewMessage.manifestId}"]`) as HTMLElement;
       if (manifestItem && previewMessage.previewUrls.length > 0) {
         let previewDiv = manifestItem.querySelector('.manifest-item-preview') as HTMLElement;
         let previewImg = manifestItem.querySelector('.manifest-preview-image') as HTMLImageElement;
-        
+
         if (!previewDiv) {
           // Create preview div and img if they don't exist
           previewDiv = document.createElement('div');
@@ -605,7 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
           previewImg.className = 'manifest-preview-image';
           previewImg.alt = 'Video preview';
           previewDiv.appendChild(previewImg);
-          
+
           // Insert preview before manifest-item-content
           const contentDiv = manifestItem.querySelector('.manifest-item-content');
           if (contentDiv) {
@@ -614,13 +614,13 @@ document.addEventListener('DOMContentLoaded', () => {
             manifestItem.appendChild(previewDiv);
           }
         }
-        
+
         if (previewDiv && previewImg) {
           // Update preview HTML with the new frames
           previewDiv.setAttribute('data-preview-urls', JSON.stringify(previewMessage.previewUrls));
           previewImg.src = previewMessage.previewUrls[0];
           previewImg.setAttribute('data-current-index', '0');
-          
+
           // Remove old listeners and re-attach hover event listeners for cycling
           const newPreviewDiv = previewDiv.cloneNode(true) as HTMLElement;
           previewDiv.parentNode?.replaceChild(newPreviewDiv, previewDiv);

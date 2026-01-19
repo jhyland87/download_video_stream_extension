@@ -10,6 +10,11 @@
 const PREVIEW_TIMESTAMPS: readonly number[] = [3, 6, 9, 12, 15, 18, 21];
 
 /**
+ * Store ZIP chunks as they arrive (persists across messages)
+ */
+const zipChunks = new Map<number, ArrayBuffer>();
+
+/**
  * Extracts video title from the page.
  * Tries multiple methods:
  * 1. Video element title attribute
@@ -456,7 +461,7 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
 chrome.runtime.onMessage.addListener((
   message: { action: string },
   _sender: chrome.runtime.MessageSender,
-  sendResponse: (response: { title?: string | null; previewUrl?: string | null; previewUrls?: string[]; blobUrl?: string; error?: string }) => void
+  sendResponse: (response: { title?: string | null; previewUrl?: string | null; previewUrls?: string[]; blobUrl?: string; error?: string; received?: boolean; cleaned?: boolean; success?: boolean; downloadId?: number; method?: string; dataUrl?: string }) => void
 ): boolean => {
   if (message.action === 'getVideoTitle') {
     const title = extractVideoTitle();
@@ -503,6 +508,191 @@ chrome.runtime.onMessage.addListener((
       console.error(`[Stream Video Saver] Content script failed to create Blob URL: ${errorMessage}`);
     }
     return true;
+  }
+
+  // Handle receiveZipChunk message
+  if (message.action === 'receiveZipChunk' && 'chunkIndex' in message && 'chunkDataBase64' in message) {
+    const chunkIndex = (message as { chunkIndex: number }).chunkIndex;
+    const chunkDataBase64 = (message as { chunkDataBase64: string }).chunkDataBase64;
+
+    // Convert base64 string back to ArrayBuffer
+    const binary = atob(chunkDataBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const chunkArrayBuffer = bytes.buffer;
+
+    zipChunks.set(chunkIndex, chunkArrayBuffer);
+    console.log(`[Stream Video Saver] Content script received chunk ${chunkIndex + 1} (${(chunkArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+    sendResponse({ received: true });
+    return true;
+  }
+
+  // Handle createBlobUrlFromChunks message
+  if (message.action === 'createBlobUrlFromChunks' && 'totalChunks' in message && 'mimeType' in message && 'filename' in message) {
+    (async (): Promise<void> => {
+      try {
+        const totalChunks = (message as { totalChunks: number }).totalChunks;
+        const mimeType = (message as { mimeType: string }).mimeType;
+        const filename = (message as { filename: string }).filename;
+
+        console.log(`[Stream Video Saver] Content script reconstructing ZIP from ${totalChunks} chunk(s)...`);
+        console.log(`[Stream Video Saver] Chunks in map: ${zipChunks.size}`);
+
+        // Reconstruct ArrayBuffer from chunks
+        const chunks: ArrayBuffer[] = [];
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = zipChunks.get(i);
+          if (!chunk) {
+            console.error(`[Stream Video Saver] Missing chunk ${i}, available chunks: ${Array.from(zipChunks.keys()).join(', ')}`);
+            throw new Error(`Missing chunk ${i}`);
+          }
+          chunks.push(chunk);
+        }
+
+        // Combine ArrayBuffers
+        const totalLength = chunks.reduce((sum, ab) => sum + ab.byteLength, 0);
+        console.log(`[Stream Video Saver] Total length to combine: ${totalLength} bytes`);
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          const chunkView = new Uint8Array(chunk);
+          combined.set(chunkView, offset);
+          offset += chunk.byteLength;
+        }
+
+        console.log(`[Stream Video Saver] Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from chunks`);
+        
+        // Convert blob to data URL for background script
+        // Blob URLs created in content script are scoped to page origin, not accessible from background
+        const blob = new Blob([combined], { type: mimeType });
+        
+        // For large files, convert to base64 data URL in chunks
+        const MAX_DATA_URL_SIZE = 50 * 1024 * 1024; // 50MB limit for data URLs
+        if (combined.byteLength > MAX_DATA_URL_SIZE) {
+          // File too large for data URL - need alternative approach
+          // Create a temporary anchor element and trigger download from content script
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          // Clean up blob URL after a delay
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+          
+          console.log(`[Stream Video Saver] Triggered download via anchor element (file too large for data URL)`);
+          sendResponse({ success: true, method: 'anchor' });
+        } else {
+          // Convert to base64 data URL
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result as string;
+            console.log(`[Stream Video Saver] Content script created data URL (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
+            sendResponse({ dataUrl: dataUrl });
+          };
+          reader.onerror = () => {
+            sendResponse({ error: 'Failed to convert blob to data URL' });
+          };
+          reader.readAsDataURL(blob);
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        sendResponse({ error: `Failed to create Blob URL from chunks: ${errorMessage}` });
+        console.error(`[Stream Video Saver] Content script failed to create Blob URL from chunks: ${errorMessage}`);
+      }
+    })();
+    return true; // Indicate we will send response asynchronously
+  }
+
+  // Handle cleanupZipChunks message
+  if (message.action === 'cleanupZipChunks' && 'totalChunks' in message) {
+    const totalChunks = (message as { totalChunks: number }).totalChunks;
+    for (let i = 0; i < totalChunks; i++) {
+      zipChunks.delete(i);
+    }
+    console.log(`[Stream Video Saver] Content script cleaned up ${totalChunks} chunk(s)`);
+    sendResponse({ cleaned: true });
+    return true;
+  }
+
+  // Handle createBlobUrlFromStorage message (legacy, kept for compatibility)
+  if (message.action === 'createBlobUrlFromStorage' && 'storageKey' in message) {
+    (async (): Promise<void> => {
+      try {
+        const storageKey = (message as { storageKey: string }).storageKey;
+
+        console.log(`[Stream Video Saver] Content script reading ZIP from chrome.storage.local with key: ${storageKey}`);
+
+        // Read chunks from chrome.storage.local
+        const result = await chrome.storage.local.get([
+          `${storageKey}_chunks`,
+          `${storageKey}_mimeType`,
+          `${storageKey}_filename`
+        ]);
+
+        const totalChunks = parseInt(result[`${storageKey}_chunks`] || '0', 10);
+        const mimeType = result[`${storageKey}_mimeType`] || 'application/zip';
+
+        if (totalChunks === 0) {
+          throw new Error(`No chunks found in storage for key: ${storageKey}`);
+        }
+
+        console.log(`[Stream Video Saver] Reading ${totalChunks} chunk(s) from storage...`);
+
+        // Read all chunks
+        const chunkKeys: string[] = [];
+        for (let i = 0; i < totalChunks; i++) {
+          chunkKeys.push(`${storageKey}_chunk_${i}`);
+        }
+
+        const chunksResult = await chrome.storage.local.get(chunkKeys);
+        const chunks: string[] = [];
+        for (let i = 0; i < totalChunks; i++) {
+          const chunkBase64 = chunksResult[`${storageKey}_chunk_${i}`];
+          if (!chunkBase64) {
+            throw new Error(`Missing chunk ${i} in storage for key: ${storageKey}`);
+          }
+          chunks.push(chunkBase64);
+        }
+
+        // Convert base64 chunks back to ArrayBuffer
+        const arrayBuffers: ArrayBuffer[] = [];
+        for (const chunkBase64 of chunks) {
+          const binary = atob(chunkBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          arrayBuffers.push(bytes.buffer);
+        }
+
+        // Combine ArrayBuffers into one
+        const totalLength = arrayBuffers.reduce((sum, ab) => sum + ab.byteLength, 0);
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const ab of arrayBuffers) {
+          combined.set(new Uint8Array(ab), offset);
+          offset += ab.byteLength;
+        }
+
+        console.log(`[Stream Video Saver] Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from storage`);
+
+        // Create Blob URL from the combined ArrayBuffer
+        const blob = new Blob([combined], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        sendResponse({ blobUrl });
+        console.log(`[Stream Video Saver] Content script created Blob URL from storage: ${blobUrl}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        sendResponse({ error: `Failed to create Blob URL from storage: ${errorMessage}` });
+        console.error(`[Stream Video Saver] Content script failed to create Blob URL from storage: ${errorMessage}`);
+      }
+    })();
+    return true; // Indicate we will send response asynchronously
   }
 
   return false;
