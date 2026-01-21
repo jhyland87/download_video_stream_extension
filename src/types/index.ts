@@ -2,6 +2,14 @@
  * Type definitions for the Stream Video Saver extension
  */
 
+// Import ignore list types
+import type {
+  GetIgnoreListMessage,
+  AddToIgnoreListMessage,
+  RemoveFromIgnoreListMessage,
+  IgnoreListResponse
+} from './ignore-list.js';
+
 /**
  * Video resolution information
  */
@@ -24,6 +32,7 @@ export interface Manifest {
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
   tabId?: number; // Tab ID where the manifest was captured (for title extraction)
+  pageDomain?: string; // Domain of the page where the manifest was captured (for ignore list filtering)
   previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
@@ -93,7 +102,11 @@ export type MessageAction =
   | 'previewFrameReady'
   | 'segmentDownloaded'
   | 'm3u8ResponseCaptured'
-  | 'm3u8FetchError';
+  | 'm3u8FetchError'
+  | 'getIgnoreList'
+  | 'addToIgnoreList'
+  | 'removeFromIgnoreList'
+  | 'getCurrentTab';
 
 /**
  * Base message interface
@@ -234,6 +247,22 @@ export interface M3U8FetchErrorMessage extends BaseMessage {
 }
 
 /**
+ * Get current tab message
+ */
+export interface GetCurrentTabMessage extends BaseMessage {
+  action: 'getCurrentTab';
+}
+
+/**
+ * Get current tab response
+ */
+export interface GetCurrentTabResponse {
+  url?: string;
+  domain?: string;
+  title?: string;
+}
+
+/**
  * Union type for all messages
  */
 export type ExtensionMessage =
@@ -250,7 +279,11 @@ export type ExtensionMessage =
   | PreviewFrameReadyMessage
   | SegmentDownloadedMessage
   | M3U8ResponseCapturedMessage
-  | M3U8FetchErrorMessage;
+  | M3U8FetchErrorMessage
+  | GetIgnoreListMessage
+  | AddToIgnoreListMessage
+  | RemoveFromIgnoreListMessage
+  | GetCurrentTabMessage;
 
 /**
  * Response for getStatus action
@@ -298,6 +331,8 @@ export type ExtensionResponse =
   | GetManifestDataResponse
   | GetDownloadStatusResponse
   | SuccessResponse
+  | IgnoreListResponse
+  | GetCurrentTabResponse
   | { error: string };
 
 // Re-export popup component types
@@ -306,6 +341,15 @@ export type {
   ManifestItemProps,
   ProgressBarProps
 } from './popup.js';
+
+// Re-export ignore list types
+export type {
+  IgnoreListAction,
+  GetIgnoreListMessage,
+  AddToIgnoreListMessage,
+  RemoveFromIgnoreListMessage,
+  IgnoreListResponse
+} from './ignore-list.js';
 
 // Re-export type guards from guards.ts for convenience
 export {

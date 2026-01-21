@@ -18,7 +18,12 @@ import type {
   StartDownloadMessage,
   CancelDownloadMessage,
   PreviewFrameReadyMessage,
+  AddToIgnoreListMessage,
+  RemoveFromIgnoreListMessage,
+  IgnoreListResponse,
+  GetCurrentTabResponse,
 } from './types/index.js';
+import { logger } from './utils/logger.js';
 
 /**
  * Regular expression pattern to match m3u8 files in URLs.
@@ -47,6 +52,11 @@ let manifestHistory: Manifest[] = [];
 let activeDownloads = new Map<string, ActiveDownload>();
 
 /**
+ * Storage key for ignored domains list.
+ */
+const IGNORE_LIST_STORAGE_KEY = 'ignoredDomains';
+
+/**
  * Generates a unique ID for each manifest using timestamp and random string.
  * @returns A unique identifier combining timestamp and random characters
  */
@@ -54,8 +64,8 @@ function generateManifestId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-console.log('[Stream Video Saver] Background script loaded');
-console.log('[Stream Video Saver] Starting continuous monitoring for m3u8 files...');
+logger.log('Background script loaded');
+logger.log('Starting continuous monitoring for m3u8 files...');
 
 /**
  * Map to store request headers by requestId for m3u8 requests.
@@ -68,12 +78,12 @@ const requestHeadersMap = new Map<string, chrome.webRequest.HttpHeader[]>();
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details: chrome.webRequest.WebRequestHeadersDetails) => {
     if (M3U8_PATTERN.test(details.url)) {
-      //console.groupCollapsed(`[Stream Video Saver] Capturing headers for m3u8: ${details.url}`);
-      //console.log(`Request ID: ${details.requestId}`);
+      //logger.groupCollapsed(` Capturing headers for m3u8: ${details.url}`);
+      //logger.log(`Request ID: ${details.requestId}`);
       if (details.requestHeaders) {
-        //console.log(`Headers (${details.requestHeaders.length}):`);
+        //logger.log(`Headers (${details.requestHeaders.length}):`);
         for (const header of details.requestHeaders) {
-          //console.log(`  ${header.name}: ${header.value || '(empty)'}`);
+          //logger.log(`  ${header.name}: ${header.value || '(empty)'}`);
         }
         requestHeadersMap.set(details.requestId, details.requestHeaders);
         // Clean up after 5 minutes to prevent memory leaks
@@ -81,9 +91,9 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
           requestHeadersMap.delete(details.requestId);
         }, 300000);
       } else {
-        console.warn(`No requestHeaders available for m3u8 request`);
+        logger.warn(`No requestHeaders available for m3u8 request`);
       }
-      console.groupEnd();
+      logger.groupEnd();
     }
   },
   { urls: ['<all_urls>'] },
@@ -100,18 +110,35 @@ chrome.webRequest.onCompleted.addListener(
   ['responseHeaders']
 );
 
-//console.log('[Stream Video Saver] ✅ Continuous monitoring active');
-//console.log(`[Stream Video Saver] M3U8_PATTERN: ${M3U8_PATTERN}`);
+//logger.log('[Stream Video Saver] ✅ Continuous monitoring active');
+//logger.log(` M3U8_PATTERN: ${M3U8_PATTERN}`);
 
 /**
  * Handles the 'getStatus' action by filtering and deduplicating manifests.
  * @param sendResponse - Function to send the response back
  */
-function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): void {
-  // Filter out manifests with no segments and remove duplicates
+async function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  // Get ignored domains
+  const ignoredDomains = await new Promise<string[]>((resolve) => {
+    chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
+      resolve(result[IGNORE_LIST_STORAGE_KEY] || []);
+    });
+  });
+
+  // Filter out manifests with no segments, ignored page domains, and remove duplicates
   // Group by URL (without query params) OR (title + segment count) and keep only the most recent one
   const manifestsWithSegments = manifestHistory
-    .filter((m) => m.expectedSegments.length > 0) // Only include manifests with segments
+    .filter((m) => {
+      // Only include manifests with segments
+      if (m.expectedSegments.length === 0) {
+        return false;
+      }
+      // Filter out manifests from pages with ignored domains (check pageDomain, not m3u8Url domain)
+      if (m.pageDomain && ignoredDomains.includes(m.pageDomain)) {
+        return false;
+      }
+      return true;
+    })
     .map((m) => ({
       id: m.id,
       fileName: m.m3u8FileName,
@@ -153,8 +180,8 @@ function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): v
     // Sort by capturedAt in descending order (most recent first)
     .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
 
-  //console.log(`[Stream Video Saver] getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
-  //console.log(`[Stream Video Saver] Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
+  //logger.log(` getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
+  //logger.log(` Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
   const response: GetStatusResponse = {
     manifestHistory: filtered
   };
@@ -192,10 +219,10 @@ function handleClearManifest(message: ClearManifestMessage, sendResponse: (respo
   // Clear a specific manifest or all manifests
   if (message.manifestId) {
     manifestHistory = manifestHistory.filter((m) => m.id !== message.manifestId);
-    console.log(`[Stream Video Saver] ✅ Manifest cleared: ${message.manifestId}. Remaining: ${manifestHistory.length}`);
+    logger.log(`✅ Manifest cleared: ${message.manifestId}. Remaining: ${manifestHistory.length}`);
   } else {
     manifestHistory = [];
-    console.log('[Stream Video Saver] ✅ All manifests cleared');
+    logger.log('✅ All manifests cleared');
   }
   const response: SuccessResponse = { success: true };
   sendResponse(response);
@@ -209,7 +236,7 @@ function handleClearManifest(message: ClearManifestMessage, sendResponse: (respo
 function handleSegmentDownloaded(message: SegmentDownloadedMessage, sendResponse: (response: ExtensionResponse) => void): void {
   // Track that a segment was downloaded (for progress tracking only)
   const segmentUrl = message.segmentUrl;
-  console.log(`[Stream Video Saver] 📥 Segment downloaded: ${segmentUrl}`);
+  logger.log(`📥 Segment downloaded: ${segmentUrl}`);
 
   // Find the manifest this segment belongs to (if we track it)
   // For now, just acknowledge
@@ -228,7 +255,7 @@ function handleStartDownload(message: StartDownloadMessage, sendResponse: (respo
   // Start a download in the background
   const { manifestId, format } = message;
   startDownload(manifestId, format).catch((error) => {
-    console.error('[Stream Video Saver] Error starting download:', error);
+    logger.error('Error starting download:', error);
   });
   const response: SuccessResponse = { success: true };
   sendResponse(response);
@@ -264,6 +291,145 @@ function handleGetDownloadStatus(sendResponse: (response: ExtensionResponse) => 
 }
 
 /**
+ * Extracts domain from a URL.
+ * @param url - The URL to extract domain from
+ * @returns The domain or undefined if URL is invalid
+ */
+function extractDomain(url: string): string | undefined {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch (error) {
+    return undefined;
+  }
+}
+
+/**
+ * Checks if a domain is in the ignore list.
+ * @param domain - The domain to check
+ * @returns True if domain is ignored, false otherwise
+ */
+async function isDomainIgnored(domain: string): Promise<boolean> {
+  try {
+    const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+    return ignoredDomains.includes(domain);
+  } catch (error) {
+    logger.error('Error checking ignore list:', error);
+    return false;
+  }
+}
+
+/**
+ * Handles the 'getIgnoreList' action by returning the list of ignored domains.
+ * @param sendResponse - Function to send the response back
+ */
+function handleGetIgnoreList(sendResponse: (response: ExtensionResponse) => void): void {
+  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
+    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+    const response: IgnoreListResponse = { domains: ignoredDomains };
+    sendResponse(response);
+  });
+}
+
+/**
+ * Handles the 'addToIgnoreList' action by adding a domain to the ignore list.
+ * Also removes all existing manifests from pages with that domain.
+ * @param message - The message containing the domain to add
+ * @param sendResponse - Function to send the response back
+ */
+function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
+    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+    
+    if (ignoredDomains.includes(message.domain)) {
+      sendResponse({ error: 'Domain already in ignore list' });
+      return;
+    }
+
+    ignoredDomains.push(message.domain);
+    chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: ignoredDomains }, () => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ error: chrome.runtime.lastError.message || 'Failed to save ignore list' });
+      } else {
+        // Remove all existing manifests from pages with this domain (check pageDomain, not m3u8Url domain)
+        const initialCount = manifestHistory.length;
+        manifestHistory = manifestHistory.filter((m) => {
+          // Filter out manifests where the page domain matches the ignored domain
+          return m.pageDomain !== message.domain;
+        });
+        const removedCount = initialCount - manifestHistory.length;
+        
+        if (removedCount > 0) {
+          logger.log(` Removed ${removedCount} manifest(s) from ignored domain: ${message.domain}`);
+        }
+
+        // Notify popup that manifests were updated (this will trigger a refresh)
+        chrome.runtime.sendMessage({
+          action: 'manifestCaptured',
+          manifestId: '',
+          fileName: '',
+          title: '',
+          segmentCount: 0
+        } as ExtensionMessage).catch(() => {
+          // Ignore if no listeners
+        });
+
+        sendResponse({ success: true });
+      }
+    });
+  });
+}
+
+/**
+ * Handles the 'removeFromIgnoreList' action by removing a domain from the ignore list.
+ * @param message - The message containing the domain to remove
+ * @param sendResponse - Function to send the response back
+ */
+function handleRemoveFromIgnoreList(message: RemoveFromIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): void {
+  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
+    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+    const filtered = ignoredDomains.filter(d => d !== message.domain);
+    
+    if (filtered.length === ignoredDomains.length) {
+      sendResponse({ error: 'Domain not found in ignore list' });
+      return;
+    }
+
+    chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: filtered }, () => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ error: chrome.runtime.lastError.message || 'Failed to save ignore list' });
+      } else {
+        sendResponse({ success: true });
+      }
+    });
+  });
+}
+
+/**
+ * Handles the 'getCurrentTab' action by returning information about the current active tab.
+ * @param sendResponse - Function to send the response back
+ */
+function handleGetCurrentTab(sendResponse: (response: ExtensionResponse) => void): void {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0 || !tabs[0].url) {
+      sendResponse({ error: 'No active tab found' });
+      return;
+    }
+
+    const tab = tabs[0];
+    const url = tab.url;
+    const domain = url ? extractDomain(url) : undefined;
+    const response: GetCurrentTabResponse = {
+      url: url,
+      domain: domain,
+      title: tab.title
+    };
+    sendResponse(response);
+  });
+}
+
+/**
  * Processes m3u8 content fetched by the background script.
  * @param url - The m3u8 URL
  * @param text - The m3u8 content
@@ -287,14 +453,14 @@ async function processM3U8Content(
     fileName = pathParts[pathParts.length - 1] || 'manifest.m3u8';
   }
 
-  console.groupCollapsed(`[Stream Video Saver] Processing M3U8: ${fileName}`);
-  console.log(`Content length: ${text.length} chars`);
-  console.log(`Content preview (first 500 chars): ${text.substring(0, 500)}`);
+  logger.groupCollapsed(` Processing M3U8: ${fileName}`);
+  logger.log(`Content length: ${text.length} chars`);
+  logger.log(`Content preview (first 500 chars): ${text.substring(0, 500)}`);
 
   // Only process VOD (Video On Demand) playlists - skip master playlists and live streams
   if (!text.includes('#EXT-X-PLAYLIST-TYPE:VOD')) {
-    console.log(`Skipping non-VOD manifest (missing #EXT-X-PLAYLIST-TYPE:VOD)`);
-    console.groupEnd();
+    logger.log(`Skipping non-VOD manifest (missing #EXT-X-PLAYLIST-TYPE:VOD)`);
+    logger.groupEnd();
     return;
   }
 
@@ -303,8 +469,8 @@ async function processM3U8Content(
 
   // Only add to history if it has segments (additional safety check)
   if (segmentUrls.length === 0) {
-    console.log(`Skipping manifest with no segments`);
-    console.groupEnd();
+    logger.log(`Skipping manifest with no segments`);
+    logger.groupEnd();
     return;
   }
 
@@ -313,12 +479,12 @@ async function processM3U8Content(
   const duration = parseDuration(text);
 
   if (resolution) {
-    console.log(`Resolution: ${resolution.width}x${resolution.height}`);
+    logger.log(`Resolution: ${resolution.width}x${resolution.height}`);
   }
   if (duration) {
     const minutes = Math.floor(duration / 60);
     const seconds = Math.floor(duration % 60);
-    console.log(`Duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
+    logger.log(`Duration: ${minutes}m ${seconds}s (${duration.toFixed(1)}s total)`);
   }
 
   // Try to get video title from the page (needed for duplicate detection)
@@ -326,23 +492,23 @@ async function processM3U8Content(
 
   // First, try to get video title from content script (preview will be captured asynchronously)
   if (details.tabId && details.tabId > 0) {
-    console.log(`Requesting video title from tab ${details.tabId}`);
+    logger.log(`Requesting video title from tab ${details.tabId}`);
     try {
       const videoTitleResponse = await chrome.tabs.sendMessage(details.tabId, { action: 'getVideoTitle' });
 
       if (videoTitleResponse && videoTitleResponse.title) {
         title = videoTitleResponse.title;
-        console.log(`Found video title from content script: ${title}`);
+        logger.log(`Found video title from content script: ${title}`);
       } else {
-        console.log('No video title in response');
+        logger.log('No video title in response');
       }
     } catch (error) {
       // Content script might not be available, continue to fallback
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`Could not get video title from content script (${errorMessage}), trying tab title`);
+      logger.log(`Could not get video title from content script (${errorMessage}), trying tab title`);
     }
   } else {
-    console.log('No tabId available, skipping title extraction');
+    logger.log('No tabId available, skipping title extraction');
   }
 
   // Fallback to tab title if video title not found
@@ -351,11 +517,11 @@ async function processM3U8Content(
       const tab = await chrome.tabs.get(details.tabId);
       if (tab && tab.title) {
         title = tab.title;
-        console.log(`Using tab title: ${title}`);
+        logger.log(`Using tab title: ${title}`);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`Could not get tab title: ${errorMessage}`);
+      logger.log(`Could not get tab title: ${errorMessage}`);
     }
   }
 
@@ -379,7 +545,7 @@ async function processM3U8Content(
 
   if (duplicateCheck) {
     // Update existing manifest with newer data (keep most recent)
-    console.log(`Duplicate detected, updating existing manifest: ${duplicateCheck.id}`);
+    logger.log(`Duplicate detected, updating existing manifest: ${duplicateCheck.id}`);
     duplicateCheck.m3u8Url = url; // Update URL in case query params changed
     duplicateCheck.m3u8Content = text; // Update content
     duplicateCheck.m3u8FileName = fileName; // Update filename
@@ -401,8 +567,21 @@ async function processM3U8Content(
       // Ignore if no listeners
     });
 
-    console.groupEnd();
+    logger.groupEnd();
     return;
+  }
+
+  // Get page domain for ignore list filtering
+  let pageDomain: string | undefined;
+  if (details.tabId && details.tabId > 0) {
+    try {
+      const tab = await chrome.tabs.get(details.tabId);
+      if (tab && tab.url) {
+        pageDomain = extractDomain(tab.url);
+      }
+    } catch (error) {
+      // Tab might not be available, skip storing page domain
+    }
   }
 
   // Create manifest object and add to history (without previewUrls initially)
@@ -418,6 +597,7 @@ async function processM3U8Content(
     resolution: resolution,
     duration: duration,
     tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined,
+    pageDomain: pageDomain,
     previewUrls: undefined // Will be updated when preview is ready
   };
 
@@ -428,15 +608,15 @@ async function processM3U8Content(
     // Remove oldest manifests (keep most recent)
     const excess = manifestHistory.length - MAX_MANIFEST_HISTORY;
     manifestHistory.splice(0, excess);
-    console.log(`Trimmed manifest history: removed ${excess} oldest manifests (keeping ${MAX_MANIFEST_HISTORY} most recent)`);
+    logger.log(`Trimmed manifest history: removed ${excess} oldest manifests (keeping ${MAX_MANIFEST_HISTORY} most recent)`);
   }
 
-  console.log(`✅ M3U8 captured and added to history`);
-  console.log(`📋 Found ${segmentUrls.length} segments`);
-  console.log(`📚 Total manifests in history: ${manifestHistory.length}`);
+  logger.log(`✅ M3U8 captured and added to history`);
+  logger.log(`📋 Found ${segmentUrls.length} segments`);
+  logger.log(`📚 Total manifests in history: ${manifestHistory.length}`);
 
   if (segmentUrls.length > 0) {
-    console.log(`First few segments: ${segmentUrls.slice(0, 3)}`);
+    logger.log(`First few segments: ${segmentUrls.slice(0, 3)}`);
   }
 
   // Notify popup that a new manifest is available (immediately, before preview is ready)
@@ -454,10 +634,10 @@ async function processM3U8Content(
   if (details.tabId && details.tabId > 0) {
     capturePreviewAsync(details.tabId, manifestId).catch((error) => {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`Error capturing preview asynchronously: ${errorMessage}`);
+      logger.log(`Error capturing preview asynchronously: ${errorMessage}`);
     });
   }
-  console.groupEnd();
+  logger.groupEnd();
 }
 
 /**
@@ -472,14 +652,14 @@ async function processM3U8Content(
  * @param manifestId - ID of the manifest to update with preview frames
  */
 async function capturePreviewAsync(tabId: number, manifestId: string): Promise<void> {
-  console.groupCollapsed(`[Stream Video Saver] Starting async preview capture: manifest ${manifestId}`);
-  console.log(`Tab ID: ${tabId}`);
+  logger.groupCollapsed(` Starting async preview capture: manifest ${manifestId}`);
+  logger.log(`Tab ID: ${tabId}`);
 
   // Initialize previewUrls array in manifest
   const manifest = manifestHistory.find((m) => m.id === manifestId);
   if (!manifest) {
-    console.log(`Manifest not found when starting preview capture`);
-    console.groupEnd();
+    logger.log(`Manifest not found when starting preview capture`);
+    logger.groupEnd();
     return;
   }
 
@@ -491,12 +671,12 @@ async function capturePreviewAsync(tabId: number, manifestId: string): Promise<v
     // Send message to content script with manifestId
     // Content script will send individual frames as previewFrameReady messages
     await chrome.tabs.sendMessage(tabId, { action: 'getVideoPreview', manifestId: manifestId });
-    console.log(`Preview capture initiated - individual frames will arrive via previewFrameReady messages`);
+    logger.log(`Preview capture initiated - individual frames will arrive via previewFrameReady messages`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.log(`Error initiating preview capture: ${errorMessage}`);
+    logger.log(`Error initiating preview capture: ${errorMessage}`);
   }
-  console.groupEnd();
+  logger.groupEnd();
 }
 
 /**
@@ -508,7 +688,7 @@ chrome.runtime.onMessage.addListener((
   _sender: chrome.runtime.MessageSender,
   sendResponse: (response: ExtensionResponse) => void
 ): boolean => {
-  //console.log(`[Stream Video Saver] Background received message: ${message.action}`);
+  //logger.log(` Background received message: ${message.action}`);
 
   switch (message.action) {
     case 'getStatus':
@@ -544,8 +724,24 @@ chrome.runtime.onMessage.addListener((
       handlePreviewFrameReady(message as PreviewFrameReadyMessage);
       return false; // No response needed
 
+    case 'getIgnoreList':
+      handleGetIgnoreList(sendResponse);
+      return true;
+
+    case 'addToIgnoreList':
+      handleAddToIgnoreList(message as AddToIgnoreListMessage, sendResponse);
+      return true;
+
+    case 'removeFromIgnoreList':
+      handleRemoveFromIgnoreList(message as RemoveFromIgnoreListMessage, sendResponse);
+      return true;
+
+    case 'getCurrentTab':
+      handleGetCurrentTab(sendResponse);
+      return true;
+
     default:
-      console.warn(`[Stream Video Saver] Unknown message action: ${(message as { action: unknown }).action}`);
+      logger.warn(` Unknown message action: ${(message as { action: unknown }).action}`);
       return false;
   }
 });
@@ -560,7 +756,7 @@ function handlePreviewFrameReady(message: PreviewFrameReadyMessage): void {
 
   const manifest = manifestHistory.find((m) => m.id === manifestId);
   if (!manifest) {
-    console.log(`[Stream Video Saver] Manifest ${manifestId} not found when handling preview frame ${frameIndex}`);
+    logger.log(` Manifest ${manifestId} not found when handling preview frame ${frameIndex}`);
     return;
   }
 
@@ -584,7 +780,7 @@ function handlePreviewFrameReady(message: PreviewFrameReadyMessage): void {
     // Ignore if no listeners
   });
 
-  console.log(`[Stream Video Saver] Preview frame ${frameIndex} received for manifest ${manifestId} (total: ${collectedFrames.length})`);
+  logger.log(` Preview frame ${frameIndex} received for manifest ${manifestId} (total: ${collectedFrames.length})`);
 }
 
 /**
@@ -697,7 +893,7 @@ function createUrlToFilenameMap(segmentUrls: string[], defaultName: string = 'se
         const { folderName, segmentName } = extractFolderAndFilename(url);
         const uniqueFilename = folderName ? `${folderName}__${segmentName}` : segmentName;
         urlToFilename.set(url, uniqueFilename);
-        console.log(`[Stream Video Saver] Duplicate filename detected: ${filename} -> ${uniqueFilename}`);
+        logger.log(` Duplicate filename detected: ${filename} -> ${uniqueFilename}`);
       }
     }
     // If filename is unique, keep it as-is (already set in first pass)
@@ -714,12 +910,12 @@ function createUrlToFilenameMap(segmentUrls: string[], defaultName: string = 'se
  * @returns Array of absolute segment URLs
  */
 function parseM3U8(content: string, baseUrl: string): string[] {
-  console.log(`[Stream Video Saver] Parsing m3u8, baseUrl: ${baseUrl}`);
+  logger.log(` Parsing m3u8, baseUrl: ${baseUrl}`);
   const lines = content.split('\n');
   const segmentUrls: string[] = [];
 
   if (!baseUrl) {
-    console.warn('[Stream Video Saver] No baseUrl provided for parsing');
+    logger.warn('[Stream Video Saver] No baseUrl provided for parsing');
     return segmentUrls;
   }
 
@@ -727,8 +923,8 @@ function parseM3U8(content: string, baseUrl: string): string[] {
   const baseUrlWithoutQuery = baseUrl.split('?')[0];
   const base = new URL(baseUrlWithoutQuery);
   const basePath = base.pathname.substring(0, base.pathname.lastIndexOf('/') + 1);
-  console.log(`[Stream Video Saver] Base origin: ${base.origin}`);
-  console.log(`[Stream Video Saver] Base path: ${basePath}`);
+  logger.log(` Base origin: ${base.origin}`);
+  logger.log(` Base path: ${basePath}`);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -756,13 +952,13 @@ function parseM3U8(content: string, baseUrl: string): string[] {
 
       // Only log first few segments to avoid console spam
       if (segmentUrls.length < 3) {
-        console.log(`[Stream Video Saver] Found segment/manifest: ${line} -> ${segmentUrl}`);
+        logger.log(` Found segment/manifest: ${line} -> ${segmentUrl}`);
       }
       segmentUrls.push(segmentUrl);
     }
   }
 
-  console.log(`[Stream Video Saver] Total segments/manifests parsed: ${segmentUrls.length}`);
+  logger.log(` Total segments/manifests parsed: ${segmentUrls.length}`);
   return segmentUrls;
 }
 
@@ -834,12 +1030,12 @@ function parseDuration(content: string): number | undefined {
  * @returns Array of absolute initialization segment URLs
  */
 function parseInitSegments(content: string, baseUrl: string): string[] {
-  console.log(`[Stream Video Saver] Parsing m3u8 for init segments, baseUrl: ${baseUrl}`);
+  logger.log(` Parsing m3u8 for init segments, baseUrl: ${baseUrl}`);
   const lines = content.split('\n');
   const initSegmentUrls: string[] = [];
 
   if (!baseUrl) {
-    console.warn('[Stream Video Saver] No baseUrl provided for parsing init segments');
+    logger.warn('[Stream Video Saver] No baseUrl provided for parsing init segments');
     return initSegmentUrls;
   }
 
@@ -871,13 +1067,13 @@ function parseInitSegments(content: string, baseUrl: string): string[] {
           initSegmentUrl = base.origin + basePath + uri;
         }
 
-        console.log(`[Stream Video Saver] Found init segment: ${uri} -> ${initSegmentUrl}`);
+        logger.log(` Found init segment: ${uri} -> ${initSegmentUrl}`);
         initSegmentUrls.push(initSegmentUrl);
       }
     }
   }
 
-  console.log(`[Stream Video Saver] Total init segments parsed: ${initSegmentUrls.length}`);
+  logger.log(` Total init segments parsed: ${initSegmentUrls.length}`);
   return initSegmentUrls;
 }
 
@@ -902,6 +1098,25 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
   // Check if it's an m3u8 file
   if (!M3U8_PATTERN.test(url)) {
     return;
+  }
+
+  // Check if the page domain (where the user is viewing) is in the ignore list
+  let pageDomain: string | undefined;
+  if (details.tabId && details.tabId > 0) {
+    try {
+      const tab = await chrome.tabs.get(details.tabId);
+      if (tab && tab.url) {
+        pageDomain = extractDomain(tab.url);
+        if (pageDomain && await isDomainIgnored(pageDomain)) {
+          logger.log(` Skipping ${url} - page domain ${pageDomain} is in ignore list`);
+          return; // Silently skip - page domain is ignored
+        }
+      }
+    } catch (error) {
+      // Tab might not be available, continue processing
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.log(` Could not get tab for domain check (${errorMessage}), continuing`);
+    }
   }
 
   const urlWithoutQuery = url.split('?')[0];
@@ -941,7 +1156,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     let fetchMode: RequestMode = 'cors'; // Default to CORS for cross-origin requests
 
     if (capturedHeaders) {
-      console.log(`[Stream Video Saver] Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
+      logger.log(` Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
 
       // Determine fetch mode from Sec-Fetch-Mode header (if present)
       const secFetchMode = capturedHeaders.find(h => h.name.toLowerCase() === 'sec-fetch-mode');
@@ -949,7 +1164,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
         const mode = secFetchMode.value.toLowerCase();
         if (mode === 'cors' || mode === 'no-cors' || mode === 'same-origin' || mode === 'navigate') {
           fetchMode = mode as RequestMode;
-          console.log(`[Stream Video Saver] Using fetch mode from Sec-Fetch-Mode: ${fetchMode}`);
+          logger.log(` Using fetch mode from Sec-Fetch-Mode: ${fetchMode}`);
         }
       }
 
@@ -966,16 +1181,16 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
           name === 'authorization'
         ) {
           headers[header.name] = header.value || '';
-          console.log(`[Stream Video Saver] Copying header: ${header.name} = ${header.value?.substring(0, 50)}...`);
+          logger.log(` Copying header: ${header.name} = ${header.value?.substring(0, 50)}...`);
         }
       }
       // Clean up the captured headers
       requestHeadersMap.delete(details.requestId);
     } else {
-      console.log(`[Stream Video Saver] No captured headers found for requestId: ${details.requestId}`);
+      logger.log(` No captured headers found for requestId: ${details.requestId}`);
     }
 
-    console.log(`[Stream Video Saver] Fetching m3u8 content from: ${url}`);
+    logger.log(` Fetching m3u8 content from: ${url}`);
 
     // Build fetch options using proper Fetch API methods
     const fetchOptions: RequestInit = {
@@ -988,16 +1203,16 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     // Add manually settable headers
     if (Object.keys(headers).length > 0) {
       fetchOptions.headers = headers;
-      console.log(`[Stream Video Saver] Using ${Object.keys(headers).length} manually settable headers from original request`);
+      logger.log(` Using ${Object.keys(headers).length} manually settable headers from original request`);
     }
 
-    console.log(`[Stream Video Saver] Fetch options: mode=${fetchOptions.mode}, credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
+    logger.log(` Fetch options: mode=${fetchOptions.mode}, credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
     // Fetch the m3u8 content with the same headers as the original request
     const response = await fetch(url, fetchOptions);
 
     if (!response.ok) {
       const errorMsg = `Failed to fetch m3u8 file: ${response.status} ${response.statusText}`;
-      console.error(`[Stream Video Saver] ${errorMsg}`);
+      logger.error(` ${errorMsg}`);
 
       // Show error to user - send error message to popup if it's open
       chrome.runtime.sendMessage({
@@ -1020,11 +1235,11 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     await processM3U8Content(url, text, details);
 
     // Only log when a new manifest is successfully added
-    console.log(`[Stream Video Saver] ✓ New manifest captured: ${url}`);
+    logger.log(` ✓ New manifest captured: ${url}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorMsg = `Error fetching m3u8 file: ${errorMessage}`;
-    console.error(`[Stream Video Saver] ${errorMsg}`, error);
+    logger.error(` ${errorMsg}`, error);
 
     // Show error to user - send error message to popup if it's open
     chrome.runtime.sendMessage({
@@ -1172,7 +1387,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Parse m3u8 to get initialization segment URLs from #EXT-X-MAP tags
   const initSegmentUrls = parseInitSegments(manifest.m3u8Content, manifest.m3u8Url);
-  console.log(`[Stream Video Saver] Found ${initSegmentUrls.length} initialization segment(s)`);
+  logger.log(` Found ${initSegmentUrls.length} initialization segment(s)`);
 
   // Create URL-to-filename mappings for both regular segments and init segments
   // Only applies unique naming when filenames are duplicated
@@ -1211,11 +1426,11 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   zip.file('compile_video.sh', bashScriptContent);
 
   // Log mapping for debugging
-  console.log(`[Stream Video Saver] Created mapping for ${segmentUrlToFilename.size} regular segments and ${initSegmentUrlToFilename.size} init segments`);
+  logger.log(` Created mapping for ${segmentUrlToFilename.size} regular segments and ${initSegmentUrlToFilename.size} init segments`);
   if (segmentUrls.length > 0) {
     const firstUrl = segmentUrls[0];
     const firstFilename = segmentUrlToFilename.get(firstUrl);
-    console.log(`[Stream Video Saver] Sample mapping: ${firstUrl.substring(0, 80)}... -> ${firstFilename}`);
+    logger.log(` Sample mapping: ${firstUrl.substring(0, 80)}... -> ${firstFilename}`);
   }
 
   // Combine mappings for m3u8 modification
@@ -1252,7 +1467,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Download initialization segments first (if any)
   if (initSegmentUrls.length > 0) {
-    console.log('[Stream Video Saver] Downloading initialization segments...');
+    logger.log('[Stream Video Saver] Downloading initialization segments...');
     for (const url of initSegmentUrls) {
       if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
         throw new Error('Download cancelled');
@@ -1270,20 +1485,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Use the filename from the mapping (handles duplicates automatically)
         const fileName = initSegmentUrlToFilename.get(url);
         if (!fileName) {
-          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for init segment URL: ${url}`);
+          logger.error(` ERROR: No filename found in mapping for init segment URL: ${url}`);
           throw new Error(`Could not get filename from init segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
         // Validate filename is not empty
         if (!fileName || fileName.trim().length === 0) {
-          console.error(`[Stream Video Saver] ERROR: Empty filename for init segment URL: ${url}`);
+          logger.error(` ERROR: Empty filename for init segment URL: ${url}`);
           throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
-        console.log(`[Stream Video Saver] Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
+        logger.log(` Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1318,10 +1533,10 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           downloadSpeed
         });
 
-        console.log(`[Stream Video Saver] Downloaded init segment: ${fileName}`);
+        logger.log(` Downloaded init segment: ${fileName}`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[Stream Video Saver] Failed to download init segment ${url}:`, errorMessage);
+        logger.error(` Failed to download init segment ${url}:`, errorMessage);
         // Track failed segment for retry instead of throwing immediately
         failedInitSegments.push(url);
       }
@@ -1354,20 +1569,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Use the filename from the mapping (handles duplicates automatically)
         const fileName = segmentUrlToFilename.get(url);
         if (!fileName) {
-          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for segment URL: ${url}`);
+          logger.error(` ERROR: No filename found in mapping for segment URL: ${url}`);
           throw new Error(`Could not get filename from segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
         // Validate filename is not empty
         if (!fileName || fileName.trim().length === 0) {
-          console.error(`[Stream Video Saver] ERROR: Empty filename for segment URL: ${url}`);
+          logger.error(` ERROR: Empty filename for segment URL: ${url}`);
           throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
-        console.log(`[Stream Video Saver] Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
+        logger.log(` Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1406,7 +1621,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           throw error;
         }
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[Stream Video Saver] Error downloading segment ${url}:`, errorMessage);
+        logger.error(` Error downloading segment ${url}:`, errorMessage);
         // Track failed segment for retry instead of failing immediately
         failedSegments.push(url);
       }
@@ -1415,7 +1630,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Retry failed init segments
   if (failedInitSegments.length > 0) {
-    console.log(`[Stream Video Saver] Retrying ${failedInitSegments.length} failed init segment(s)...`);
+    logger.log(` Retrying ${failedInitSegments.length} failed init segment(s)...`);
     for (const url of failedInitSegments) {
       if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
         throw new Error('Download cancelled');
@@ -1433,20 +1648,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Use the filename from the mapping (handles duplicates automatically)
         const fileName = initSegmentUrlToFilename.get(url);
         if (!fileName) {
-          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for init segment URL: ${url}`);
+          logger.error(` ERROR: No filename found in mapping for init segment URL: ${url}`);
           throw new Error(`Could not get filename from init segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
         // Validate filename is not empty
         if (!fileName || fileName.trim().length === 0) {
-          console.error(`[Stream Video Saver] ERROR: Empty filename for init segment URL: ${url}`);
+          logger.error(` ERROR: Empty filename for init segment URL: ${url}`);
           throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
-        console.log(`[Stream Video Saver] Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
+        logger.log(` Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1481,10 +1696,10 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           downloadSpeed
         });
 
-        console.log(`[Stream Video Saver] Successfully retried init segment: ${fileName}`);
+        logger.log(` Successfully retried init segment: ${fileName}`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[Stream Video Saver] Failed to retry init segment ${url}:`, errorMessage);
+        logger.error(` Failed to retry init segment ${url}:`, errorMessage);
         throw new Error(`Failed to download initialization segment after retry: ${errorMessage}`);
       }
     }
@@ -1492,7 +1707,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Retry failed regular segments
   if (failedSegments.length > 0) {
-    console.log(`[Stream Video Saver] Retrying ${failedSegments.length} failed segment(s)...`);
+    logger.log(` Retrying ${failedSegments.length} failed segment(s)...`);
 
     // Retry failed segments in smaller batches
     for (let i = 0; i < failedSegments.length; i += RETRY_BATCH_SIZE) {
@@ -1520,20 +1735,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Use the filename from the mapping (handles duplicates automatically)
         const fileName = segmentUrlToFilename.get(url);
         if (!fileName) {
-          console.error(`[Stream Video Saver] ERROR: No filename found in mapping for segment URL: ${url}`);
+          logger.error(` ERROR: No filename found in mapping for segment URL: ${url}`);
           throw new Error(`Could not get filename from segment URL mapping for: ${url.substring(0, 100)}`);
         }
 
         // Validate filename is not empty
         if (!fileName || fileName.trim().length === 0) {
-          console.error(`[Stream Video Saver] ERROR: Empty filename for segment URL: ${url}`);
+          logger.error(` ERROR: Empty filename for segment URL: ${url}`);
           throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
         }
 
         // Convert blob to ArrayBuffer for better memory efficiency with large files
         const arrayBuffer = await blob.arrayBuffer();
         zip.file(fileName, arrayBuffer, { binary: true });
-        console.log(`[Stream Video Saver] Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
+        logger.log(` Added segment to ZIP: ${fileName} (${blobSize} bytes)`);
         downloaded++;
 
         // Calculate download speed
@@ -1568,16 +1783,16 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           downloadSpeed
         });
 
-        console.log(`[Stream Video Saver] Successfully retried segment: ${fileName}`);
+        logger.log(` Successfully retried segment: ${fileName}`);
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
             throw error;
           }
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.error(`[Stream Video Saver] Failed to retry segment ${url}:`, errorMessage);
+          logger.error(` Failed to retry segment ${url}:`, errorMessage);
           // Don't throw on retry failure - we'll continue with partial download
           // Log a warning instead
-          console.warn(`[Stream Video Saver] Segment ${url} failed even after retry. Download may be incomplete.`);
+          logger.warn(` Segment ${url} failed even after retry. Download may be incomplete.`);
         }
       }));
     }
@@ -1592,22 +1807,22 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   totalBytes = downloadedBytes;
 
   // Log summary before ZIP generation
-  console.groupCollapsed('[Stream Video Saver] Download summary before ZIP generation');
-  console.log(`Total segments: ${total}`);
-  console.log(`Successfully downloaded: ${downloaded}`);
-  console.log(`Failed segments: ${failedSegments.length}`);
-  console.log(`Failed init segments: ${failedInitSegments.length}`);
-  console.log(`Total bytes downloaded: ${downloadedBytes}`);
+  logger.groupCollapsed('[Stream Video Saver] Download summary before ZIP generation');
+  logger.log(`Total segments: ${total}`);
+  logger.log(`Successfully downloaded: ${downloaded}`);
+  logger.log(`Failed segments: ${failedSegments.length}`);
+  logger.log(`Failed init segments: ${failedInitSegments.length}`);
+  logger.log(`Total bytes downloaded: ${downloadedBytes}`);
 
   // Count files in ZIP
   let fileCount = 0;
   zip.forEach(() => { fileCount++; });
-  console.log(`Files in ZIP before generation: ${fileCount}`);
-  console.groupEnd();
+  logger.log(`Files in ZIP before generation: ${fileCount}`);
+  logger.groupEnd();
 
   // Warn if no segments were downloaded
   if (downloaded === 0) {
-    console.error('[Stream Video Saver] WARNING: No segments were successfully downloaded! ZIP will only contain m3u8 and bash script.');
+    logger.error('[Stream Video Saver] WARNING: No segments were successfully downloaded! ZIP will only contain m3u8 and bash script.');
   }
 
   // Generate zip file - notify user that ZIP creation is starting
@@ -1622,17 +1837,17 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   // Generate ZIP as ArrayBuffer (service workers don't support Blob/URL.createObjectURL)
   // This can take a while for large files
-  console.log('[Stream Video Saver] Generating ZIP file...');
+  logger.log('[Stream Video Saver] Generating ZIP file...');
   let zipArrayBuffer: ArrayBuffer;
   try {
     zipArrayBuffer = await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Stream Video Saver] ERROR: Failed to generate ZIP: ${errorMessage}`);
+    logger.error(` ERROR: Failed to generate ZIP: ${errorMessage}`);
     throw new Error(`Failed to generate ZIP file: ${errorMessage}`);
   }
   const zipSize = zipArrayBuffer.byteLength;
-  console.log(`[Stream Video Saver] ZIP generated successfully: ${zipSize} bytes (${(zipSize / 1024 / 1024).toFixed(2)} MB)`);
+  logger.log(` ZIP generated successfully: ${zipSize} bytes (${(zipSize / 1024 / 1024).toFixed(2)} MB)`);
 
   // Validate ZIP size
   if (zipSize === 0) {
@@ -1671,7 +1886,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
   if (zipSize > MAX_DATA_URL_SIZE) {
     // For large files, send chunks via sendMessage to content script
-    console.log(`[Stream Video Saver] ZIP file is large (${(zipSize / 1024 / 1024).toFixed(2)} MB), sending chunks to content script`);
+    logger.log(` ZIP file is large (${(zipSize / 1024 / 1024).toFixed(2)} MB), sending chunks to content script`);
 
     // Find the tab where the manifest was captured
     const tabId = manifest.tabId;
@@ -1693,7 +1908,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         const CHUNK_SIZE = 40 * 1024 * 1024; // 40MB chunks (under sendMessage limit)
         const totalChunks = Math.ceil(zipArrayBuffer.byteLength / CHUNK_SIZE);
 
-        console.log(`[Stream Video Saver] Sending ZIP to content script in ${totalChunks} chunk(s)...`);
+        logger.log(` Sending ZIP to content script in ${totalChunks} chunk(s)...`);
 
         // Send chunks to content script sequentially
         // Convert ArrayBuffer chunks to base64 strings (ArrayBuffers are transferred, not copied)
@@ -1737,7 +1952,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
 
         // Request content script to create Blob URL
-        console.log(`[Stream Video Saver] All chunks sent, requesting content script to create Blob URL...`);
+        logger.log(` All chunks sent, requesting content script to create Blob URL...`);
         const response = await chrome.tabs.sendMessage(tabId, {
           action: 'createBlobUrlFromChunks',
           totalChunks: totalChunks,
@@ -1756,7 +1971,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Handle different response types
         if (response.success && response.method === 'anchor') {
           // Content script triggered download via anchor element (for large files)
-          console.log(`[Stream Video Saver] Download triggered via anchor element in content script`);
+          logger.log(` Download triggered via anchor element in content script`);
 
           // Update progress to complete
           notifyDownloadProgress(downloadId, {
@@ -1792,7 +2007,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
 
         const dataUrl = response.dataUrl;
-        console.log(`[Stream Video Saver] Received data URL from content script (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
+        logger.log(` Received data URL from content script (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
 
         // Use the data URL for download (background script has access to chrome.downloads)
         // Clear badge when download starts
@@ -1813,7 +2028,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
           if (chrome.runtime.lastError) {
             const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-            console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+            logger.error(` Error downloading ZIP: ${errorMessage}`);
             notifyDownloadError(downloadId, errorMessage);
             activeDownloads.delete(downloadId);
           } else {
@@ -1838,7 +2053,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         });
       } else {
         // File is small enough for sendMessage
-        console.log(`[Stream Video Saver] Sending ${(zipArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB ArrayBuffer to content script...`);
+        logger.log(` Sending ${(zipArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB ArrayBuffer to content script...`);
         const response = await chrome.tabs.sendMessage(tabId, {
           action: 'createBlobUrl',
           arrayBuffer: zipArrayBuffer,
@@ -1850,7 +2065,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
 
         const blobUrl = response.blobUrl;
-        console.log(`[Stream Video Saver] Created Blob URL: ${blobUrl.substring(0, 100)}...`);
+        logger.log(` Created Blob URL: ${blobUrl.substring(0, 100)}...`);
 
         // Use the Blob URL for download
         // Clear badge when download starts
@@ -1863,7 +2078,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }, (_chromeDownloadId?: number) => {
           if (chrome.runtime.lastError) {
             const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-            console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+            logger.error(` Error downloading ZIP: ${errorMessage}`);
             notifyDownloadError(downloadId, errorMessage);
             activeDownloads.delete(downloadId);
           } else {
@@ -1889,12 +2104,12 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[Stream Video Saver] Failed to create Blob URL: ${errorMessage}`);
+      logger.error(` Failed to create Blob URL: ${errorMessage}`);
       throw new Error(`Failed to prepare large ZIP for download (${(zipSize / 1024 / 1024).toFixed(2)} MB): ${errorMessage}`);
     }
   } else {
     // For smaller files, use data URL
-    console.log(`[Stream Video Saver] Converting ZIP to base64 data URL (${(zipSize / 1024 / 1024).toFixed(2)} MB)...`);
+    logger.log(` Converting ZIP to base64 data URL (${(zipSize / 1024 / 1024).toFixed(2)} MB)...`);
 
     // Convert ArrayBuffer to base64 data URL for chrome.downloads API
     // Use chunked conversion to avoid stack overflow with large files
@@ -1930,12 +2145,12 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
       }
 
-      console.log(`[Stream Video Saver] Converting ${binary.length} character binary string to base64...`);
+      logger.log(` Converting ${binary.length} character binary string to base64...`);
       const base64 = btoa(binary);
-      console.log(`[Stream Video Saver] Base64 conversion complete: ${base64.length} characters`);
+      logger.log(` Base64 conversion complete: ${base64.length} characters`);
 
       const dataUrl = `data:application/zip;base64,${base64}`;
-      console.log(`[Stream Video Saver] Data URL created: ${dataUrl.length} characters`);
+      logger.log(` Data URL created: ${dataUrl.length} characters`);
 
       // Create download using chrome.downloads API
       // Clear badge when download starts
@@ -1948,7 +2163,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       }, (_chromeDownloadId?: number) => {
         if (chrome.runtime.lastError) {
           const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-          console.error(`[Stream Video Saver] Error downloading ZIP: ${errorMessage}`);
+          logger.error(` Error downloading ZIP: ${errorMessage}`);
           notifyDownloadError(downloadId, errorMessage);
           activeDownloads.delete(downloadId);
         } else {
@@ -1973,7 +2188,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`[Stream Video Saver] Error during base64 conversion: ${errorMessage}`);
+      logger.error(` Error during base64 conversion: ${errorMessage}`);
       throw new Error(`Failed to convert ZIP to data URL: ${errorMessage}`);
     }
   }
@@ -2013,11 +2228,11 @@ function modifyM3U8ForLocalFiles(content: string, baseUrl: string, urlToFilename
             // Replace the URI in the tag with just the filename
             const modifiedLine = trimmedLine.replace(/URI="[^"]+"/, `URI="${filename}"`);
             modifiedLines.push(modifiedLine);
-            console.log(`[Stream Video Saver] Updated #EXT-X-MAP URI: ${uriMatch[1]} -> ${filename}`);
+            logger.log(` Updated #EXT-X-MAP URI: ${uriMatch[1]} -> ${filename}`);
             continue;
           }
         } catch (error) {
-          console.warn(`[Stream Video Saver] Failed to resolve or map init segment URI: ${uriMatch[1]}`, error);
+          logger.warn(` Failed to resolve or map init segment URI: ${uriMatch[1]}`, error);
         }
       }
       // If we couldn't map it, keep the original line
@@ -2046,12 +2261,12 @@ function modifyM3U8ForLocalFiles(content: string, baseUrl: string, urlToFilename
         modifiedLines.push(filename);
       } else {
         // If not found in mapping, keep original (shouldn't happen but safe fallback)
-        console.warn(`[Stream Video Saver] Segment URL not found in mapping: ${segmentUrl}`);
+        logger.warn(` Segment URL not found in mapping: ${segmentUrl}`);
         modifiedLines.push(line);
       }
     } catch (error) {
       // If URL resolution fails, keep original line
-      console.warn(`[Stream Video Saver] Failed to resolve or map segment URL: ${trimmedLine}`, error);
+      logger.warn(` Failed to resolve or map segment URL: ${trimmedLine}`, error);
       modifiedLines.push(line);
     }
   }

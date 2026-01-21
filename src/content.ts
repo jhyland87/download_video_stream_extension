@@ -3,6 +3,8 @@
  * This script runs in the context of web pages to extract video metadata and capture frames
  */
 
+import { logger } from './utils/logger.js';
+
 /**
  * Preview frame timestamps (in seconds) to capture from videos.
  * Modify this array to change which moments are captured for preview.
@@ -113,7 +115,7 @@ function waitForVideoEvent(video: HTMLVideoElement, eventName: string, timeout: 
 async function waitForVideoLoad(video: HTMLVideoElement, timeout: number = 2000): Promise<void> {
   // If already loaded, return immediately
   if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-    console.log('[Stream Video Saver] Video already loaded, no wait needed');
+    logger.log(' Video already loaded, no wait needed');
     return;
   }
 
@@ -128,7 +130,7 @@ async function waitForVideoLoad(video: HTMLVideoElement, timeout: number = 2000)
     ]);
     // Verify dimensions after event fires
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-      console.log('[Stream Video Saver] Video loaded via event');
+      logger.log(' Video loaded via event');
       return;
     }
   } catch {
@@ -140,12 +142,12 @@ async function waitForVideoLoad(video: HTMLVideoElement, timeout: number = 2000)
     const elapsed = Date.now() - startTime;
 
     if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-      console.log(`[Stream Video Saver] Video loaded after ${elapsed}ms - readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}`);
+      logger.log(`Video loaded after ${elapsed}ms - readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}`);
       return;
     }
 
     if (elapsed >= timeout) {
-      console.log(`[Stream Video Saver] Video load timeout after ${elapsed}ms - readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}`);
+      logger.log(`Video load timeout after ${elapsed}ms - readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}`);
       throw new Error('Video load timeout');
     }
 
@@ -176,7 +178,7 @@ async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, tim
   // If video is before target, wait for it to reach it
   // If video is after target, we've already missed it, so just capture current frame
   if (video.currentTime >= targetTime - tolerance && video.currentTime <= targetTime + tolerance) {
-    console.log(`[Stream Video Saver] Video already at target time ${targetTime}s (current: ${video.currentTime}s)`);
+    logger.log(`Video already at target time ${targetTime}s (current: ${video.currentTime}s)`);
     return;
   }
 
@@ -208,7 +210,7 @@ async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, tim
         video.playbackRate = originalPlaybackRate;
       }
 
-      console.log(`[Stream Video Saver] Video reached target time ${targetTime}s (current: ${currentTime}s)`);
+      logger.log(`Video reached target time ${targetTime}s (current: ${currentTime}s)`);
       // Wait a bit for the frame to be rendered
       setTimeout(() => resolve(), 50);
     }
@@ -234,7 +236,7 @@ function captureFrameAtCurrentTime(video: HTMLVideoElement, maxWidth: number = 3
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) {
-      console.warn('[Stream Video Saver] Canvas context not available');
+      logger.warn(' Canvas context not available');
       return null;
     }
 
@@ -263,7 +265,7 @@ function captureFrameAtCurrentTime(video: HTMLVideoElement, maxWidth: number = 3
     return dataUrl;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.log(`[Stream Video Saver] Could not capture video frame (likely CORS): ${errorMessage}`);
+    logger.log(`Could not capture video frame (likely CORS): ${errorMessage}`);
     return null;
   }
 }
@@ -278,44 +280,44 @@ function captureFrameAtCurrentTime(video: HTMLVideoElement, maxWidth: number = 3
  * @returns Array of data URLs of the captured frames, or empty array if capture fails
  */
 async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180, timestamps: number[] = [...PREVIEW_TIMESTAMPS], manifestId?: string): Promise<string[]> {
-  console.groupCollapsed(`[Stream Video Saver] captureVideoFrame (${maxWidth}x${maxHeight}, ${timestamps.length} timestamps)`);
+  logger.groupCollapsed(` captureVideoFrame (${maxWidth}x${maxHeight}, ${timestamps.length} timestamps)`);
   try {
     // First, try to find video elements in the main document
     const videoElements = document.getElementsByTagName('video');
-    console.log(`Found ${videoElements.length} video element(s) in main document`);
+    logger.log(`Found ${videoElements.length} video element(s) in main document`);
 
     let video: HTMLVideoElement | null = null;
 
       for (let i = 0; i < videoElements.length; i++) {
       const v = videoElements[i];
-      console.log(`Video element ${i}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}, src=${v.src?.substring(0, 100)}`);
+      logger.log(`Video element ${i}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}, src=${v.src?.substring(0, 100)}`);
       // Check if video is loaded and has dimensions
       if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
         video = v;
-        console.log(`Selected video element ${i} for preview capture`);
+        logger.log(`Selected video element ${i} for preview capture`);
         break;
       }
 
       if (v.videoWidth > 0 && v.videoHeight > 0) {
         // Video has dimensions but readyState < 2 - we'll wait for it
         video = v;
-        console.log(`Selected video element ${i} (has dimensions but readyState < 2, will wait)`);
+        logger.log(`Selected video element ${i} (has dimensions but readyState < 2, will wait)`);
         break;
       }
 
       if (v.src || v.currentSrc) {
         // Video has a source but not loaded yet - we'll try waiting for it
         video = v;
-        console.log(`Selected video element ${i} (has source but not loaded, will wait)`);
+        logger.log(`Selected video element ${i} (has source but not loaded, will wait)`);
         break;
       }
     }
 
     // If no video found in main document, try searching in iframes
     if (!video) {
-      console.log('No video found in main document, trying iframes...');
+      logger.log('No video found in main document, trying iframes...');
       const iframes = document.getElementsByTagName('iframe');
-      console.log(`Found ${iframes.length} iframe(s) on page`);
+      logger.log(`Found ${iframes.length} iframe(s) on page`);
 
       for (let i = 0; i < iframes.length; i++) {
         const iframe = iframes[i];
@@ -324,68 +326,68 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
           const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
           if (iframeDoc) {
             const iframeVideos = iframeDoc.getElementsByTagName('video');
-            console.log(`Iframe ${i}: Found ${iframeVideos.length} video element(s)`);
+            logger.log(`Iframe ${i}: Found ${iframeVideos.length} video element(s)`);
 
             for (let j = 0; j < iframeVideos.length; j++) {
               const v = iframeVideos[j];
-              console.log(`Iframe ${i} video element ${j}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}`);
+              logger.log(`Iframe ${i} video element ${j}: readyState=${v.readyState}, videoWidth=${v.videoWidth}, videoHeight=${v.videoHeight}`);
               // Accept video even if not fully loaded - we'll wait for it later
               if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
                 video = v;
-                console.log(`Selected video element from iframe ${i}`);
+                logger.log(`Selected video element from iframe ${i}`);
                 break;
               }
 
               if (v.videoWidth > 0 && v.videoHeight > 0) {
                 // Video has dimensions but readyState < 2 - we'll wait for it
                 video = v;
-                console.log(`Selected video element from iframe ${i} (has dimensions but readyState < 2, will wait)`);
+                logger.log(`Selected video element from iframe ${i} (has dimensions but readyState < 2, will wait)`);
                 break;
               }
 
               if (v.src || v.currentSrc) {
                 // Video has a source but not loaded yet - we'll try waiting for it
                 video = v;
-                console.log(`Selected video element from iframe ${i} (has source but not loaded, will wait)`);
+                logger.log(`Selected video element from iframe ${i} (has source but not loaded, will wait)`);
                 break;
               }
             }
             if (video) break;
           } else {
-            console.log(`Iframe ${i}: Cannot access contentDocument (likely cross-origin)`);
+            logger.log(`Iframe ${i}: Cannot access contentDocument (likely cross-origin)`);
           }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          console.log(`Iframe ${i}: Error accessing contentDocument: ${errorMessage}`);
+          logger.log(`Iframe ${i}: Error accessing contentDocument: ${errorMessage}`);
         }
       }
     }
 
     if (!video) {
-      console.log('No video element found in main document or iframes');
-      console.groupEnd();
+      logger.log('No video element found in main document or iframes');
+      logger.groupEnd();
       return [];
     }
 
     // Wait for video to load if it's not ready yet
     if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
-      console.log(`Video not fully loaded yet (readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}), waiting...`);
+      logger.log(`Video not fully loaded yet (readyState=${video.readyState}, dimensions=${video.videoWidth}x${video.videoHeight}), waiting...`);
       try {
         await waitForVideoLoad(video, 3000); // Wait up to 3 seconds
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`Video did not load within timeout: ${errorMessage}`);
-        console.groupEnd();
+        logger.log(`Video did not load within timeout: ${errorMessage}`);
+        logger.groupEnd();
         return [];
       }
     }
 
     // Check if video has duration (needed for seeking)
     if (!video.duration || isNaN(video.duration) || !isFinite(video.duration)) {
-      console.log('Video duration not available, cannot seek to specific timestamps');
+      logger.log('Video duration not available, cannot seek to specific timestamps');
       // Fallback to current frame
       const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
-      console.groupEnd();
+      logger.groupEnd();
       return frame ? [frame] : [];
     }
 
@@ -397,14 +399,14 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
         // Clamp timestamp to video duration
         const targetTime = Math.min(Math.max(0, timestamp), video.duration);
 
-        console.log(`Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
+        logger.log(`Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
 
         try {
           await waitForVideoTime(video, targetTime, 10000);
           const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
           if (frame) {
             previewFrames.push(frame);
-            console.log(`✅ Captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
+            logger.log(`✅ Captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
 
             // Send individual frame to background script immediately (if manifestId provided)
             if (manifestId) {
@@ -415,21 +417,21 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
                 frameIndex: previewFrames.length - 1
               } as ExtensionMessage).catch((error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
-                console.log(`Error sending individual preview frame: ${errorMessage}`);
+                logger.log(`Error sending individual preview frame: ${errorMessage}`);
               });
             }
           } else {
-            console.log(`Failed to capture frame at ${targetTime}s`);
+            logger.log(`Failed to capture frame at ${targetTime}s`);
           }
         } catch (timeError) {
           const errorMessage = timeError instanceof Error ? timeError.message : String(timeError);
-          console.log(`Error waiting for video time ${targetTime}s: ${errorMessage}`);
+          logger.log(`Error waiting for video time ${targetTime}s: ${errorMessage}`);
           // Continue with next timestamp
         }
       }
 
       if (previewFrames.length === 0) {
-        console.log('No frames captured, trying fallback to current frame');
+        logger.log('No frames captured, trying fallback to current frame');
         // Fallback to current frame if no frames captured
         const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
         if (frame) {
@@ -437,20 +439,20 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
         }
       }
 
-      console.log(`✅ Captured ${previewFrames.length} preview frame(s) total`);
-      console.groupEnd();
+      logger.log(`✅ Captured ${previewFrames.length} preview frame(s) total`);
+      logger.groupEnd();
       return previewFrames;
     } catch (error) {
       // CORS or other error - video might be cross-origin
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`Could not capture video frames (likely CORS): ${errorMessage}`);
-      console.groupEnd();
+      logger.log(`Could not capture video frames (likely CORS): ${errorMessage}`);
+      logger.groupEnd();
       return [];
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`Error capturing video frame: ${errorMessage}`);
-    console.groupEnd();
+    logger.error(`Error capturing video frame: ${errorMessage}`);
+    logger.groupEnd();
     return [];
   }
 }
@@ -471,24 +473,24 @@ chrome.runtime.onMessage.addListener((
 
   if (message.action === 'getVideoPreview') {
     const manifestId = (message as { manifestId?: string }).manifestId;
-    console.groupCollapsed(`[Stream Video Saver] getVideoPreview (manifestId: ${manifestId || 'none'})`);
+    logger.groupCollapsed(` getVideoPreview (manifestId: ${manifestId || 'none'})`);
 
     // Handle async operation
     (async (): Promise<void> => {
       try {
         const previewUrls = await captureVideoFrame(320, 180, [...PREVIEW_TIMESTAMPS], manifestId);
         if (previewUrls && previewUrls.length > 0) {
-          console.log(`Sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
+          logger.log(`Sending ${previewUrls.length} preview URL(s) back (first frame length: ${previewUrls[0].length})`);
         } else {
-          console.log('Could not capture preview - returning empty array');
+          logger.log('Could not capture preview - returning empty array');
         }
         sendResponse({ previewUrls: previewUrls || [] });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Error capturing preview: ${errorMessage}`);
+        logger.error(`Error capturing preview: ${errorMessage}`);
         sendResponse({ previewUrls: [] });
       } finally {
-        console.groupEnd();
+        logger.groupEnd();
       }
     })();
 
@@ -501,11 +503,11 @@ chrome.runtime.onMessage.addListener((
       const blob = new Blob([message.arrayBuffer as ArrayBuffer], { type: message.mimeType as string });
       const blobUrl = URL.createObjectURL(blob);
       sendResponse({ blobUrl });
-      console.log(`[Stream Video Saver] Content script created Blob URL: ${blobUrl}`);
+      logger.log(`Content script created Blob URL: ${blobUrl}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       sendResponse({ error: `Failed to create Blob URL: ${errorMessage}` });
-      console.error(`[Stream Video Saver] Content script failed to create Blob URL: ${errorMessage}`);
+      logger.error(`Content script failed to create Blob URL: ${errorMessage}`);
     }
     return true;
   }
@@ -524,7 +526,7 @@ chrome.runtime.onMessage.addListener((
     const chunkArrayBuffer = bytes.buffer;
 
     zipChunks.set(chunkIndex, chunkArrayBuffer);
-    console.log(`[Stream Video Saver] Content script received chunk ${chunkIndex + 1} (${(chunkArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+    logger.log(`Content script received chunk ${chunkIndex + 1} (${(chunkArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
     sendResponse({ received: true });
     return true;
   }
@@ -537,15 +539,15 @@ chrome.runtime.onMessage.addListener((
         const mimeType = (message as { mimeType: string }).mimeType;
         const filename = (message as { filename: string }).filename;
 
-        console.log(`[Stream Video Saver] Content script reconstructing ZIP from ${totalChunks} chunk(s)...`);
-        console.log(`[Stream Video Saver] Chunks in map: ${zipChunks.size}`);
+        logger.log(`Content script reconstructing ZIP from ${totalChunks} chunk(s)...`);
+        logger.log(`Chunks in map: ${zipChunks.size}`);
 
         // Reconstruct ArrayBuffer from chunks
         const chunks: ArrayBuffer[] = [];
         for (let i = 0; i < totalChunks; i++) {
           const chunk = zipChunks.get(i);
           if (!chunk) {
-            console.error(`[Stream Video Saver] Missing chunk ${i}, available chunks: ${Array.from(zipChunks.keys()).join(', ')}`);
+            logger.error(`Missing chunk ${i}, available chunks: ${Array.from(zipChunks.keys()).join(', ')}`);
             throw new Error(`Missing chunk ${i}`);
           }
           chunks.push(chunk);
@@ -553,7 +555,7 @@ chrome.runtime.onMessage.addListener((
 
         // Combine ArrayBuffers
         const totalLength = chunks.reduce((sum, ab) => sum + ab.byteLength, 0);
-        console.log(`[Stream Video Saver] Total length to combine: ${totalLength} bytes`);
+        logger.log(`Total length to combine: ${totalLength} bytes`);
         const combined = new Uint8Array(totalLength);
         let offset = 0;
         for (const chunk of chunks) {
@@ -562,7 +564,7 @@ chrome.runtime.onMessage.addListener((
           offset += chunk.byteLength;
         }
 
-        console.log(`[Stream Video Saver] Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from chunks`);
+        logger.log(`Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from chunks`);
         
         // Convert blob to data URL for background script
         // Blob URLs created in content script are scoped to page origin, not accessible from background
@@ -584,14 +586,14 @@ chrome.runtime.onMessage.addListener((
           // Clean up blob URL after a delay
           setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
           
-          console.log(`[Stream Video Saver] Triggered download via anchor element (file too large for data URL)`);
+          logger.log(`Triggered download via anchor element (file too large for data URL)`);
           sendResponse({ success: true, method: 'anchor' });
         } else {
           // Convert to base64 data URL
           const reader = new FileReader();
           reader.onload = () => {
             const dataUrl = reader.result as string;
-            console.log(`[Stream Video Saver] Content script created data URL (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
+            logger.log(`Content script created data URL (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
             sendResponse({ dataUrl: dataUrl });
           };
           reader.onerror = () => {
@@ -602,7 +604,7 @@ chrome.runtime.onMessage.addListener((
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         sendResponse({ error: `Failed to create Blob URL from chunks: ${errorMessage}` });
-        console.error(`[Stream Video Saver] Content script failed to create Blob URL from chunks: ${errorMessage}`);
+        logger.error(`Content script failed to create Blob URL from chunks: ${errorMessage}`);
       }
     })();
     return true; // Indicate we will send response asynchronously
@@ -614,7 +616,7 @@ chrome.runtime.onMessage.addListener((
     for (let i = 0; i < totalChunks; i++) {
       zipChunks.delete(i);
     }
-    console.log(`[Stream Video Saver] Content script cleaned up ${totalChunks} chunk(s)`);
+    logger.log(`Content script cleaned up ${totalChunks} chunk(s)`);
     sendResponse({ cleaned: true });
     return true;
   }
@@ -625,7 +627,7 @@ chrome.runtime.onMessage.addListener((
       try {
         const storageKey = (message as { storageKey: string }).storageKey;
 
-        console.log(`[Stream Video Saver] Content script reading ZIP from chrome.storage.local with key: ${storageKey}`);
+        logger.log(`Content script reading ZIP from chrome.storage.local with key: ${storageKey}`);
 
         // Read chunks from chrome.storage.local
         const result = await chrome.storage.local.get([
@@ -641,7 +643,7 @@ chrome.runtime.onMessage.addListener((
           throw new Error(`No chunks found in storage for key: ${storageKey}`);
         }
 
-        console.log(`[Stream Video Saver] Reading ${totalChunks} chunk(s) from storage...`);
+        logger.log(`Reading ${totalChunks} chunk(s) from storage...`);
 
         // Read all chunks
         const chunkKeys: string[] = [];
@@ -679,17 +681,17 @@ chrome.runtime.onMessage.addListener((
           offset += ab.byteLength;
         }
 
-        console.log(`[Stream Video Saver] Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from storage`);
+        logger.log(`Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from storage`);
 
         // Create Blob URL from the combined ArrayBuffer
         const blob = new Blob([combined], { type: mimeType });
         const blobUrl = URL.createObjectURL(blob);
         sendResponse({ blobUrl });
-        console.log(`[Stream Video Saver] Content script created Blob URL from storage: ${blobUrl}`);
+        logger.log(`Content script created Blob URL from storage: ${blobUrl}`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         sendResponse({ error: `Failed to create Blob URL from storage: ${errorMessage}` });
-        console.error(`[Stream Video Saver] Content script failed to create Blob URL from storage: ${errorMessage}`);
+        logger.error(`Content script failed to create Blob URL from storage: ${errorMessage}`);
       }
     })();
     return true; // Indicate we will send response asynchronously

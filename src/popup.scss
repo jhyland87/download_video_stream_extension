@@ -2,23 +2,26 @@
 
 body {
   width: 350px;
-  padding: 20px;
+  padding: 16px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   margin: 0;
+  background: #ffffff;
 }
 
 h1 {
-  font-size: 18px;
-  margin: 0 0 15px 0;
-  color: #333;
+  font-size: 16px;
+  margin: 0 0 12px 0;
+  color: #212121;
+  font-weight: 600;
 }
 
 .status {
-  padding: 10px;
+  padding: 8px 12px;
   background: #f5f5f5;
   border-radius: 4px;
-  margin-bottom: 15px;
-  font-size: 14px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #666;
 
   &.active {
     background: #e8f5e9;
@@ -27,36 +30,52 @@ h1 {
 }
 
 .button {
-  width: 100%;
-  padding: 12px;
-  margin: 5px 0;
-  border: none;
+  padding: 6px 12px;
+  margin: 3px 0;
+  border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 12px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s;
+  font-weight: 500;
 
   &.primary {
     background: #1976d2;
     color: white;
+    border-color: #1565c0;
 
     &:hover {
       background: #1565c0;
     }
+
+    &:active {
+      background: #0d47a1;
+    }
   }
 
   &.secondary {
-    background: #f5f5f5;
-    color: #333;
+    background: #fafafa;
+    color: #555;
+    border-color: #e0e0e0;
 
     &:hover {
-      background: #e0e0e0;
+      background: #f0f0f0;
+      border-color: #d0d0d0;
+    }
+
+    &:active {
+      background: #e8e8e8;
     }
   }
 
   &:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  // Full width buttons (for main actions)
+  &.full-width {
+    width: 100%;
   }
 }
 
@@ -86,6 +105,8 @@ h1 {
   justify-content: center;
   color: white;
   font-size: 12px;
+  // Note: width is set inline via style={{ width: `${percent}%` }} in popup.tsx
+  // because it's dynamically calculated based on download progress
 }
 
 .info {
@@ -109,12 +130,17 @@ h1 {
 
 .manifest-item {
   padding: 10px;
-  background: #e3f2fd;
+  background: #f8f9fa;
   border-radius: 4px;
-  margin-bottom: 10px;
-  border: 1px solid #90caf9;
+  margin-bottom: 8px;
+  border: 1px solid #e0e0e0;
   display: flex;
   gap: 10px;
+  transition: border-color 0.2s;
+
+  &:hover {
+    border-color: #b0b0b0;
+  }
 }
 
 .manifest-item-preview {
@@ -157,42 +183,59 @@ h1 {
 
 .manifest-item-actions {
   display: flex;
-  gap: 5px;
+  gap: 6px;
 
   button {
     flex: 1;
-    padding: 6px;
+    padding: 5px 10px;
     font-size: 11px;
     margin: 0;
   }
 
   .btn-small {
-    padding: 4px 8px;
+    padding: 3px 6px;
     font-size: 10px;
+    min-width: auto;
   }
 }
 
 // Specific button styles
 .btn-clear-manifest {
-  padding: 2px 6px;
+  padding: 3px 6px;
   font-size: 10px;
+  min-width: auto;
+  flex: 0 0 auto;
 }
 
 .btn-download-zip {
   font-size: 11px;
-  padding: 6px;
+  padding: 5px 10px;
 }
 
 .cancel-download-btn {
-  margin-top: 10px;
+  margin-top: 8px;
+  padding: 5px 12px;
 }
 
 .clear-all-btn {
   margin-top: 10px;
+  padding: 5px 12px;
+  width: 100%;
 }
 
 .manifest-history {
   max-height: 400px;
   overflow-y: auto;
   margin-bottom: 15px;
+}
+
+// Manage Ignore List button specific styling
+.button.full-width {
+  margin-top: 12px;
+}
+
+// Progress fill dynamic width is handled inline as it's calculated dynamically
+// Image error state (handled via class)
+.manifest-preview-image.hidden {
+  display: none;
 }

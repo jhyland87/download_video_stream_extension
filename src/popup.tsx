@@ -27,9 +27,10 @@ import type {
   ManifestItemProps,
   ProgressBarProps
 } from './types/index.js';
+import { logger } from './utils/logger.js';
 
 // CRITICAL: This should appear in console immediately when script loads
-console.log('[Stream Video Saver] popup.tsx loaded - script is executing');
+logger.log('popup.tsx loaded - script is executing');
 
 /**
  * Formats bytes into a human-readable string (B, KB, MB, GB).
@@ -138,8 +139,8 @@ const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
         alt="Video preview"
         className="manifest-preview-image"
         onError={(e) => {
-          console.error('[Stream Video Saver] Preview image failed to load');
-          (e.target as HTMLImageElement).style.display = 'none';
+          logger.error('Preview image failed to load');
+          (e.target as HTMLImageElement).classList.add('hidden');
         }}
       />
     </div>
@@ -267,12 +268,25 @@ const Popup = () => {
   const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
   const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Opens the side panel for ignore list management
+  const openIgnoreListSidePanel = useCallback(async () => {
+    try {
+      const window = await chrome.windows.getCurrent();
+      if (window.id !== undefined) {
+        await chrome.sidePanel.open({ windowId: window.id });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Error opening side panel:', errorMessage);
+    }
+  }, []);
+
   // Update manifest status
   const updateStatus = useCallback(() => {
     try {
       chrome.runtime.sendMessage({ action: 'getStatus' } as ExtensionMessage, (response: ExtensionResponse) => {
         if (chrome.runtime.lastError) {
-          console.error('[Stream Video Saver] Error getting status:', chrome.runtime.lastError);
+          logger.error('Error getting status:', chrome.runtime.lastError);
           setManifests([]);
           setStatusText('Error loading manifests');
           return;
@@ -292,7 +306,7 @@ const Popup = () => {
         }
       });
     } catch (error) {
-      console.error('[Stream Video Saver] Exception in updateStatus:', error);
+      logger.error('Exception in updateStatus:', error);
       setManifests([]);
       setStatusText('Error loading manifests');
     }
@@ -302,7 +316,7 @@ const Popup = () => {
   const downloadManifest = useCallback((manifestId: string, _format: DownloadFormat = 'zip') => {
     // Prevent double-clicks
     if (selectedManifestId === manifestId && progress && progress.status !== 'complete' && progress.status !== 'cancelled') {
-      console.log(`[Stream Video Saver] Download already in progress for manifest ${manifestId}, ignoring duplicate click`);
+      logger.log(`Download already in progress for manifest ${manifestId}, ignoring duplicate click`);
       return;
     }
 
@@ -405,11 +419,11 @@ const Popup = () => {
         setActiveDownloadId(null);
       } else if (message.action === 'manifestCaptured') {
         const capturedMessage = message as ManifestCapturedMessage;
-        console.log(`[Stream Video Saver] Manifest captured: ${capturedMessage.fileName}`);
+        logger.log(`Manifest captured: ${capturedMessage.fileName}`);
         updateStatus();
       } else if (message.action === 'previewUpdated') {
         const previewMessage = message as PreviewUpdatedMessage;
-        console.log(`[Stream Video Saver] Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
+        logger.log(`Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
 
         // Update the specific manifest's preview URLs
         setManifests((prev) =>
@@ -423,7 +437,7 @@ const Popup = () => {
         const fetchErrorMessage = message as M3U8FetchErrorMessage;
         const fileName = extractFilenameFromUrl(fetchErrorMessage.url);
         const errorMsg = `Failed to fetch ${fileName}: ${fetchErrorMessage.status} ${fetchErrorMessage.statusText || ''}`;
-        console.error(`[Stream Video Saver] ${errorMsg}`, fetchErrorMessage.url);
+        logger.error(`${errorMsg}`, fetchErrorMessage.url);
         setError(errorMsg);
       }
     };
@@ -439,7 +453,7 @@ const Popup = () => {
   useEffect(() => {
     // Verify chrome.runtime is available
     if (typeof chrome === 'undefined' || !chrome.runtime) {
-      console.error('[Stream Video Saver] CRITICAL: chrome.runtime is not available!');
+      logger.error('CRITICAL: chrome.runtime is not available!');
       setStatusText('ERROR: Chrome runtime not available!');
       return;
     }
@@ -508,17 +522,24 @@ const Popup = () => {
           Error: {error}
         </div>
       )}
+
+      <button
+        className="button secondary full-width"
+        onClick={openIgnoreListSidePanel}
+      >
+        Manage Ignore List
+      </button>
     </div>
   );
 };
 
 // Initialize React app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('[Stream Video Saver] DOMContentLoaded fired - initializing React app');
+  logger.log('DOMContentLoaded fired - initializing React app');
 
   const rootElement = document.getElementById('root');
   if (!rootElement) {
-    console.error('[Stream Video Saver] Root element not found!');
+    logger.error('Root element not found!');
     return;
   }
 

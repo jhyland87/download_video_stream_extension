@@ -32,8 +32,17 @@ async function build() {
     });
     
     // Write compiled CSS to dist
-    const cssPath = join(__dirname, 'dist', 'popup.css');
-    writeFileSync(cssPath, scssResult.css);
+    const popupCssPath = join(__dirname, 'dist', 'popup.css');
+    writeFileSync(popupCssPath, scssResult.css);
+
+    // Compile side panel SCSS to CSS
+    const sidepanelScssResult = sass.compile(join(__dirname, 'src', 'sidepanel.scss'), {
+      style: isProduction ? 'compressed' : 'expanded',
+    });
+    
+    // Write compiled CSS to dist
+    const sidepanelCssPath = join(__dirname, 'dist', 'sidepanel.css');
+    writeFileSync(sidepanelCssPath, sidepanelScssResult.css);
 
     // Build popup script (React app)
     await esbuild.build({
@@ -67,6 +76,18 @@ async function build() {
       },
       // Don't bundle jszip since we load it via importScripts
       external: ['jszip'],
+    });
+
+    // Build side panel script (React app)
+    await esbuild.build({
+      ...baseConfig,
+      entryPoints: ['src/sidepanel.tsx'],
+      outfile: 'dist/sidepanel.js',
+      globalName: 'SidePanelScript',
+      jsx: 'automatic', // Use React 17+ JSX transform
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(isProduction ? 'production' : 'development'),
+      },
     });
 
     console.log('Build complete!');
