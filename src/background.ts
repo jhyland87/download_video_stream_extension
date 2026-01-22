@@ -341,7 +341,7 @@ function handleGetIgnoreList(sendResponse: (response: ExtensionResponse) => void
 function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): void {
   chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
     const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
-    
+
     if (ignoredDomains.includes(message.domain)) {
       sendResponse({ error: 'Domain already in ignore list' });
       return;
@@ -359,7 +359,7 @@ function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (r
           return m.pageDomain !== message.domain;
         });
         const removedCount = initialCount - manifestHistory.length;
-        
+
         if (removedCount > 0) {
           logger.log(` Removed ${removedCount} manifest(s) from ignored domain: ${message.domain}`);
         }
@@ -390,7 +390,7 @@ function handleRemoveFromIgnoreList(message: RemoveFromIgnoreListMessage, sendRe
   chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
     const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
     const filtered = ignoredDomains.filter(d => d !== message.domain);
-    
+
     if (filtered.length === ignoredDomains.length) {
       sendResponse({ error: 'Domain not found in ignore list' });
       return;
@@ -1156,7 +1156,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     let fetchMode: RequestMode = 'cors'; // Default to CORS for cross-origin requests
 
     if (capturedHeaders) {
-      logger.log(` Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
+      //logger.log(` Found ${capturedHeaders.length} captured headers for requestId: ${details.requestId}`);
 
       // Determine fetch mode from Sec-Fetch-Mode header (if present)
       const secFetchMode = capturedHeaders.find(h => h.name.toLowerCase() === 'sec-fetch-mode');
@@ -1164,7 +1164,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
         const mode = secFetchMode.value.toLowerCase();
         if (mode === 'cors' || mode === 'no-cors' || mode === 'same-origin' || mode === 'navigate') {
           fetchMode = mode as RequestMode;
-          logger.log(` Using fetch mode from Sec-Fetch-Mode: ${fetchMode}`);
+          //logger.log(` Using fetch mode from Sec-Fetch-Mode: ${fetchMode}`);
         }
       }
 
@@ -1181,16 +1181,16 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
           name === 'authorization'
         ) {
           headers[header.name] = header.value || '';
-          logger.log(` Copying header: ${header.name} = ${header.value?.substring(0, 50)}...`);
+          //logger.log(` Copying header: ${header.name} = ${header.value?.substring(0, 50)}...`);
         }
       }
       // Clean up the captured headers
       requestHeadersMap.delete(details.requestId);
     } else {
-      logger.log(` No captured headers found for requestId: ${details.requestId}`);
+      //logger.log(` No captured headers found for requestId: ${details.requestId}`);
     }
 
-    logger.log(` Fetching m3u8 content from: ${url}`);
+    //logger.log(` Fetching m3u8 content from: ${url}`);
 
     // Build fetch options using proper Fetch API methods
     const fetchOptions: RequestInit = {
@@ -1203,10 +1203,10 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     // Add manually settable headers
     if (Object.keys(headers).length > 0) {
       fetchOptions.headers = headers;
-      logger.log(` Using ${Object.keys(headers).length} manually settable headers from original request`);
+      //logger.log(` Using ${Object.keys(headers).length} manually settable headers from original request`);
     }
 
-    logger.log(` Fetch options: mode=${fetchOptions.mode}, credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
+    //logger.log(` Fetch options: mode=${fetchOptions.mode}, credentials=${fetchOptions.credentials}, referrerPolicy=${fetchOptions.referrerPolicy}, headers=${Object.keys(headers).length} headers`);
     // Fetch the m3u8 content with the same headers as the original request
     const response = await fetch(url, fetchOptions);
 
@@ -1235,7 +1235,7 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     await processM3U8Content(url, text, details);
 
     // Only log when a new manifest is successfully added
-    logger.log(` ✓ New manifest captured: ${url}`);
+    //logger.log(` ✓ New manifest captured: ${url}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorMsg = `Error fetching m3u8 file: ${errorMessage}`;

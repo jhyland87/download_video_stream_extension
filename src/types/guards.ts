@@ -12,7 +12,12 @@ import type {
   GetDownloadStatusMessage,
   DownloadProgressMessage,
   DownloadErrorMessage,
-  ManifestCapturedMessage
+  ManifestCapturedMessage,
+  GetVideoPreviewMessage,
+  CreateBlobUrlMessage,
+  ReceiveZipChunkMessage,
+  CreateBlobUrlFromChunksMessage,
+  CleanupZipChunksMessage
 } from './index.js';
 
 /**
@@ -170,4 +175,67 @@ export function isHTMLDivElement(value: unknown): value is HTMLDivElement {
  */
 export function isHTMLButtonElement(value: unknown): value is HTMLButtonElement {
   return value !== null && value instanceof HTMLButtonElement;
+}
+
+/**
+ * Type guard to check if a message is GetVideoPreviewMessage
+ * @param message - The message to check
+ * @returns True if message is GetVideoPreviewMessage
+ */
+export function isGetVideoPreviewMessage(message: { action: string }): message is GetVideoPreviewMessage {
+  return message.action === 'getVideoPreview';
+}
+
+/**
+ * Type guard to check if a message is CreateBlobUrlMessage
+ * @param message - The message to check
+ * @returns True if message is CreateBlobUrlMessage
+ */
+export function isCreateBlobUrlMessage(message: { action: string }): message is CreateBlobUrlMessage {
+  return message.action === 'createBlobUrl' && 'arrayBuffer' in message && 'mimeType' in message;
+}
+
+/**
+ * Type guard to check if a message is ReceiveZipChunkMessage
+ * @param message - The message to check
+ * @returns True if message is ReceiveZipChunkMessage
+ */
+export function isReceiveZipChunkMessage(message: { action: string }): message is ReceiveZipChunkMessage {
+  return message.action === 'receiveZipChunk' && 'chunkIndex' in message && 'chunkDataBase64' in message;
+}
+
+/**
+ * Type guard to check if a message is CreateBlobUrlFromChunksMessage
+ * @param message - The message to check
+ * @returns True if message is CreateBlobUrlFromChunksMessage
+ */
+export function isCreateBlobUrlFromChunksMessage(message: { action: string }): message is CreateBlobUrlFromChunksMessage {
+  return message.action === 'createBlobUrlFromChunks' && 'totalChunks' in message && 'mimeType' in message && 'filename' in message;
+}
+
+/**
+ * Type guard to check if a message is CleanupZipChunksMessage
+ * @param message - The message to check
+ * @returns True if message is CleanupZipChunksMessage
+ */
+export function isCleanupZipChunksMessage(message: { action: string }): message is CleanupZipChunksMessage {
+  return message.action === 'cleanupZipChunks' && 'totalChunks' in message;
+}
+
+/**
+ * Type guard to check if a value is an ArrayBuffer
+ * @param value - The value to check
+ * @returns True if value is an ArrayBuffer
+ */
+export function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return value instanceof ArrayBuffer;
+}
+
+/**
+ * Type guard to check if FileReader result is a string (data URL)
+ * @param value - The FileReader result to check
+ * @returns True if value is a string
+ */
+export function isFileReaderStringResult(value: string | ArrayBuffer | null): value is string {
+  return typeof value === 'string';
 }

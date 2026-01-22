@@ -106,7 +106,13 @@ export type MessageAction =
   | 'getIgnoreList'
   | 'addToIgnoreList'
   | 'removeFromIgnoreList'
-  | 'getCurrentTab';
+  | 'getCurrentTab'
+  | 'getVideoTitle'
+  | 'getVideoPreview'
+  | 'createBlobUrl'
+  | 'receiveZipChunk'
+  | 'createBlobUrlFromChunks'
+  | 'cleanupZipChunks';
 
 /**
  * Base message interface
@@ -263,6 +269,100 @@ export interface GetCurrentTabResponse {
 }
 
 /**
+ * Get video title message (content script)
+ */
+export interface GetVideoTitleMessage extends BaseMessage {
+  action: 'getVideoTitle';
+}
+
+/**
+ * Get video preview message (content script)
+ */
+export interface GetVideoPreviewMessage extends BaseMessage {
+  action: 'getVideoPreview';
+  manifestId?: string;
+}
+
+/**
+ * Create blob URL message (content script)
+ */
+export interface CreateBlobUrlMessage extends BaseMessage {
+  action: 'createBlobUrl';
+  arrayBuffer: ArrayBuffer;
+  mimeType: string;
+}
+
+/**
+ * Receive ZIP chunk message (content script)
+ */
+export interface ReceiveZipChunkMessage extends BaseMessage {
+  action: 'receiveZipChunk';
+  chunkIndex: number;
+  chunkDataBase64: string;
+}
+
+/**
+ * Create blob URL from chunks message (content script)
+ */
+export interface CreateBlobUrlFromChunksMessage extends BaseMessage {
+  action: 'createBlobUrlFromChunks';
+  totalChunks: number;
+  mimeType: string;
+  filename: string;
+}
+
+/**
+ * Cleanup ZIP chunks message (content script)
+ */
+export interface CleanupZipChunksMessage extends BaseMessage {
+  action: 'cleanupZipChunks';
+  totalChunks: number;
+}
+
+/**
+ * Content script response types
+ */
+export interface GetVideoTitleResponse {
+  title?: string | null;
+}
+
+export interface GetVideoPreviewResponse {
+  previewUrls?: string[];
+}
+
+export interface CreateBlobUrlResponse {
+  blobUrl?: string;
+  error?: string;
+}
+
+export interface ReceiveZipChunkResponse {
+  received?: boolean;
+}
+
+export interface CreateBlobUrlFromChunksResponse {
+  success?: boolean;
+  method?: string;
+  dataUrl?: string;
+  error?: string;
+}
+
+export interface CleanupZipChunksResponse {
+  cleaned?: boolean;
+}
+
+/**
+ * Union type for all content script responses
+ */
+export type ContentScriptResponse =
+  | GetVideoTitleResponse
+  | GetVideoPreviewResponse
+  | CreateBlobUrlResponse
+  | ReceiveZipChunkResponse
+  | CreateBlobUrlFromChunksResponse
+  | CleanupZipChunksResponse
+  | { error: string };
+
+/**
  * Union type for all messages
  */
 export type ExtensionMessage =
@@ -283,7 +383,13 @@ export type ExtensionMessage =
   | GetIgnoreListMessage
   | AddToIgnoreListMessage
   | RemoveFromIgnoreListMessage
-  | GetCurrentTabMessage;
+  | GetCurrentTabMessage
+  | GetVideoTitleMessage
+  | GetVideoPreviewMessage
+  | CreateBlobUrlMessage
+  | ReceiveZipChunkMessage
+  | CreateBlobUrlFromChunksMessage
+  | CleanupZipChunksMessage;
 
 /**
  * Response for getStatus action

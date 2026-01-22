@@ -4,6 +4,24 @@
  */
 
 import { logger } from './utils/logger.js';
+import type {
+  ExtensionMessage,
+  ContentScriptResponse,
+  GetVideoPreviewMessage,
+  CreateBlobUrlMessage,
+  ReceiveZipChunkMessage,
+  CreateBlobUrlFromChunksMessage,
+  CleanupZipChunksMessage
+} from './types/index.js';
+import {
+  isGetVideoPreviewMessage,
+  isCreateBlobUrlMessage,
+  isReceiveZipChunkMessage,
+  isCreateBlobUrlFromChunksMessage,
+  isCleanupZipChunksMessage,
+  isArrayBuffer,
+  isFileReaderStringResult
+} from './types/guards.js';
 
 /**
  * Preview frame timestamps (in seconds) to capture from videos.
@@ -156,34 +174,25 @@ async function waitForVideoLoad(video: HTMLVideoElement, timeout: number = 2000)
 }
 
 /**
- * Waits for the video to naturally reach a specific time during playback.
- * Monitors timeupdate events and captures when the video reaches the target time.
+ * Waits for the video to naturally reach a specific time during user playback.
+ * Only monitors timeupdate events - does NOT auto-play or alter playback speed.
+ * If the video is not playing, this will wait indefinitely until the user plays it.
  * @param video - The video element to monitor
  * @param targetTime - Target time in seconds to wait for
- * @param timeout - Maximum time to wait in milliseconds (default: 10000ms)
- * @returns Promise that resolves when video reaches the target time, or rejects on timeout
+ * @param timeout - Maximum time to wait in milliseconds (default: 30000ms)
+ * @returns Promise that resolves when video reaches the target time during natural playback, or rejects on timeout
  */
-async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, timeout: number = 10000): Promise<void> {
+async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, timeout: number = 30000): Promise<void> {
   const tolerance = 0.3; // Capture within 0.3 seconds of target time
-  const startTime = Date.now();
-  const wasPlaying = !video.paused;
-  const originalPlaybackRate = video.playbackRate;
 
-  // Start playing if not already playing (at faster rate to speed up capture)
-  if (video.paused) {
-    video.playbackRate = 2.0; // Play at 2x speed to capture frames faster
-    await video.play();
-  }
-
-  // If video is before target, wait for it to reach it
-  // If video is after target, we've already missed it, so just capture current frame
+  // Check if video is already at target time
   if (video.currentTime >= targetTime - tolerance && video.currentTime <= targetTime + tolerance) {
     logger.log(`Video already at target time ${targetTime}s (current: ${video.currentTime}s)`);
     return;
   }
 
+  // If video has already passed the target time, we've missed it
   if (video.currentTime > targetTime + tolerance) {
-    // Video has already passed the target time, can't capture it naturally
     throw new Error(`Video has already passed target time ${targetTime}s (current: ${video.currentTime}s)`);
   }
 
@@ -191,31 +200,26 @@ async function waitForVideoTime(video: HTMLVideoElement, targetTime: number, tim
 
   const timeoutId = setTimeout(() => {
     video.removeEventListener('timeupdate', checkTime);
-    if (!wasPlaying) {
-      video.pause();
-      video.playbackRate = originalPlaybackRate;
-    }
-    reject(new Error(`Video did not reach time ${targetTime}s within ${timeout}ms`));
+    reject(new Error(`Video did not reach time ${targetTime}s within ${timeout}ms (video may not be playing)`));
   }, timeout);
 
   const checkTime = (): void => {
+    // Only capture if video is actually playing (not paused)
+    if (video.paused) {
+      return; // Wait for user to play the video
+    }
+
     const currentTime = video.currentTime;
     if (currentTime >= targetTime - tolerance && currentTime <= targetTime + tolerance) {
       clearTimeout(timeoutId);
       video.removeEventListener('timeupdate', checkTime);
-
-      // Restore playback state if we changed it
-      if (!wasPlaying) {
-        video.pause();
-        video.playbackRate = originalPlaybackRate;
-      }
-
-      logger.log(`Video reached target time ${targetTime}s (current: ${currentTime}s)`);
+      logger.log(`Video reached target time ${targetTime}s during natural playback (current: ${currentTime}s)`);
       // Wait a bit for the frame to be rendered
       setTimeout(() => resolve(), 50);
     }
   };
 
+  // Listen for timeupdate events (only fires when video is playing)
   video.addEventListener('timeupdate', checkTime);
 
   // Also check immediately in case timeupdate doesn't fire frequently enough
@@ -382,31 +386,44 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
       }
     }
 
-    // Check if video has duration (needed for seeking)
+    // Check if video has duration (needed for timestamp checking)
     if (!video.duration || isNaN(video.duration) || !isFinite(video.duration)) {
-      logger.log('Video duration not available, cannot seek to specific timestamps');
-      // Fallback to current frame
-      const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
+      logger.log('Video duration not available, cannot capture frames at specific timestamps');
       logger.groupEnd();
-      return frame ? [frame] : [];
+      return []; // No preview if duration unavailable
     }
 
     const previewFrames: string[] = [];
+    const capturedTimestamps = new Set<number>(); // Track which timestamps we've captured
 
-    try {
-      // Capture frames at specified timestamps as video naturally plays
+    // Set up a passive listener that captures frames as the video naturally plays
+    // This only captures when the user plays the video - completely transparent
+    const timeUpdateHandler = (): void => {
+      // Only capture if video is actually playing (not paused)
+      if (video.paused) {
+        return; // Wait for user to play the video
+      }
+
+      const currentTime = video.currentTime;
+      const tolerance = 0.3;
+
+      // Check each target timestamp to see if we've reached it
       for (const timestamp of timestamps) {
-        // Clamp timestamp to video duration
         const targetTime = Math.min(Math.max(0, timestamp), video.duration);
 
-        logger.log(`Waiting for video to reach ${targetTime}s (duration: ${video.duration}s, current: ${video.currentTime}s)`);
+        // Skip if we've already captured this timestamp
+        if (capturedTimestamps.has(targetTime)) {
+          continue;
+        }
 
-        try {
-          await waitForVideoTime(video, targetTime, 10000);
+        // Check if we're within tolerance of this timestamp
+        if (currentTime >= targetTime - tolerance && currentTime <= targetTime + tolerance) {
           const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
           if (frame) {
             previewFrames.push(frame);
-            logger.log(`✅ Captured frame at ${targetTime}s (${Math.round(frame.length / 1024)}KB)`);
+            capturedTimestamps.add(targetTime);
+            const frameIndex = previewFrames.length - 1;
+            logger.log(`✅ Captured frame at ${targetTime}s during natural playback (${Math.round(frame.length / 1024)}KB)`);
 
             // Send individual frame to background script immediately (if manifestId provided)
             if (manifestId) {
@@ -414,34 +431,47 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
                 action: 'previewFrameReady',
                 manifestId: manifestId,
                 frameUrl: frame,
-                frameIndex: previewFrames.length - 1
+                frameIndex: frameIndex
               } as ExtensionMessage).catch((error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.log(`Error sending individual preview frame: ${errorMessage}`);
               });
             }
-          } else {
-            logger.log(`Failed to capture frame at ${targetTime}s`);
+
+            // If we've captured all timestamps, remove the listener
+            if (capturedTimestamps.size === timestamps.length) {
+              video.removeEventListener('timeupdate', timeUpdateHandler);
+              logger.log(`✅ Captured all ${previewFrames.length} preview frame(s) during natural playback`);
+            }
           }
-        } catch (timeError) {
-          const errorMessage = timeError instanceof Error ? timeError.message : String(timeError);
-          logger.log(`Error waiting for video time ${targetTime}s: ${errorMessage}`);
-          // Continue with next timestamp
+          break; // Only capture one frame per timeupdate event
         }
       }
+    };
 
-      if (previewFrames.length === 0) {
-        logger.log('No frames captured, trying fallback to current frame');
-        // Fallback to current frame if no frames captured
-        const frame = captureFrameAtCurrentTime(video, maxWidth, maxHeight);
-        if (frame) {
-          previewFrames.push(frame);
+    try {
+      // Add listener for timeupdate events (only fires when video is playing)
+      video.addEventListener('timeupdate', timeUpdateHandler);
+
+      // Check immediately in case video is already at one of the target times and playing
+      timeUpdateHandler();
+
+      // Set a timeout to remove the listener after a reasonable time
+      // This prevents the listener from staying active forever if user never plays the video
+      setTimeout(() => {
+        video.removeEventListener('timeupdate', timeUpdateHandler);
+        if (previewFrames.length === 0) {
+          logger.log('No preview frames captured - video was not played by user');
+        } else {
+          logger.log(`✅ Captured ${previewFrames.length} preview frame(s) total (stopping listener after timeout)`);
         }
-      }
+      }, 300000); // 5 minutes timeout - if user hasn't played video by then, give up
 
-      logger.log(`✅ Captured ${previewFrames.length} preview frame(s) total`);
+      // Return immediately - frames will be captured asynchronously as video plays
+      // The listener will send individual frames via previewFrameReady messages
+      logger.log(`Preview capture listener active - will capture frames as video naturally plays`);
       logger.groupEnd();
-      return previewFrames;
+      return previewFrames; // May be empty initially, will be populated as video plays
     } catch (error) {
       // CORS or other error - video might be cross-origin
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -461,9 +491,9 @@ async function captureVideoFrame(maxWidth: number = 320, maxHeight: number = 180
  * Message listener for title extraction and preview frame requests
  */
 chrome.runtime.onMessage.addListener((
-  message: { action: string },
+  message: ExtensionMessage,
   _sender: chrome.runtime.MessageSender,
-  sendResponse: (response: { title?: string | null; previewUrl?: string | null; previewUrls?: string[]; blobUrl?: string; error?: string; received?: boolean; cleaned?: boolean; success?: boolean; downloadId?: number; method?: string; dataUrl?: string }) => void
+  sendResponse: (response: ContentScriptResponse) => void
 ): boolean => {
   if (message.action === 'getVideoTitle') {
     const title = extractVideoTitle();
@@ -471,8 +501,8 @@ chrome.runtime.onMessage.addListener((
     return true;
   }
 
-  if (message.action === 'getVideoPreview') {
-    const manifestId = (message as { manifestId?: string }).manifestId;
+  if (isGetVideoPreviewMessage(message)) {
+    const manifestId = message.manifestId;
     logger.groupCollapsed(` getVideoPreview (manifestId: ${manifestId || 'none'})`);
 
     // Handle async operation
@@ -498,9 +528,13 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle createBlobUrl message
-  if (message.action === 'createBlobUrl' && 'arrayBuffer' in message && 'mimeType' in message) {
+  if (isCreateBlobUrlMessage(message)) {
     try {
-      const blob = new Blob([message.arrayBuffer as ArrayBuffer], { type: message.mimeType as string });
+      if (!isArrayBuffer(message.arrayBuffer)) {
+        sendResponse({ error: 'Invalid arrayBuffer in message' });
+        return true;
+      }
+      const blob = new Blob([message.arrayBuffer], { type: message.mimeType });
       const blobUrl = URL.createObjectURL(blob);
       sendResponse({ blobUrl });
       logger.log(`Content script created Blob URL: ${blobUrl}`);
@@ -513,9 +547,9 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle receiveZipChunk message
-  if (message.action === 'receiveZipChunk' && 'chunkIndex' in message && 'chunkDataBase64' in message) {
-    const chunkIndex = (message as { chunkIndex: number }).chunkIndex;
-    const chunkDataBase64 = (message as { chunkDataBase64: string }).chunkDataBase64;
+  if (isReceiveZipChunkMessage(message)) {
+    const chunkIndex = message.chunkIndex;
+    const chunkDataBase64 = message.chunkDataBase64;
 
     // Convert base64 string back to ArrayBuffer
     const binary = atob(chunkDataBase64);
@@ -532,12 +566,12 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle createBlobUrlFromChunks message
-  if (message.action === 'createBlobUrlFromChunks' && 'totalChunks' in message && 'mimeType' in message && 'filename' in message) {
+  if (isCreateBlobUrlFromChunksMessage(message)) {
     (async (): Promise<void> => {
       try {
-        const totalChunks = (message as { totalChunks: number }).totalChunks;
-        const mimeType = (message as { mimeType: string }).mimeType;
-        const filename = (message as { filename: string }).filename;
+        const totalChunks = message.totalChunks;
+        const mimeType = message.mimeType;
+        const filename = message.filename;
 
         logger.log(`Content script reconstructing ZIP from ${totalChunks} chunk(s)...`);
         logger.log(`Chunks in map: ${zipChunks.size}`);
@@ -565,11 +599,11 @@ chrome.runtime.onMessage.addListener((
         }
 
         logger.log(`Content script reconstructed ${(combined.byteLength / 1024 / 1024).toFixed(2)} MB from chunks`);
-        
+
         // Convert blob to data URL for background script
         // Blob URLs created in content script are scoped to page origin, not accessible from background
         const blob = new Blob([combined], { type: mimeType });
-        
+
         // For large files, convert to base64 data URL in chunks
         const MAX_DATA_URL_SIZE = 50 * 1024 * 1024; // 50MB limit for data URLs
         if (combined.byteLength > MAX_DATA_URL_SIZE) {
@@ -585,14 +619,18 @@ chrome.runtime.onMessage.addListener((
           document.body.removeChild(a);
           // Clean up blob URL after a delay
           setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-          
+
           logger.log(`Triggered download via anchor element (file too large for data URL)`);
           sendResponse({ success: true, method: 'anchor' });
         } else {
           // Convert to base64 data URL
           const reader = new FileReader();
           reader.onload = () => {
-            const dataUrl = reader.result as string;
+            if (!isFileReaderStringResult(reader.result)) {
+              sendResponse({ error: 'Failed to convert blob to data URL: result is not a string' });
+              return;
+            }
+            const dataUrl = reader.result;
             logger.log(`Content script created data URL (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
             sendResponse({ dataUrl: dataUrl });
           };
@@ -611,8 +649,8 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle cleanupZipChunks message
-  if (message.action === 'cleanupZipChunks' && 'totalChunks' in message) {
-    const totalChunks = (message as { totalChunks: number }).totalChunks;
+  if (isCleanupZipChunksMessage(message)) {
+    const totalChunks = message.totalChunks;
     for (let i = 0; i < totalChunks; i++) {
       zipChunks.delete(i);
     }
@@ -622,10 +660,16 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle createBlobUrlFromStorage message (legacy, kept for compatibility)
-  if (message.action === 'createBlobUrlFromStorage' && 'storageKey' in message) {
+  // Use type assertion for legacy message that's not in the union type
+  const messageWithAction = message as { action: string; storageKey?: string };
+  if (messageWithAction.action === 'createBlobUrlFromStorage' && 'storageKey' in messageWithAction) {
     (async (): Promise<void> => {
       try {
-        const storageKey = (message as { storageKey: string }).storageKey;
+        const storageKey = messageWithAction.storageKey;
+        if (!storageKey) {
+          sendResponse({ error: 'Missing storageKey in message' });
+          return;
+        }
 
         logger.log(`Content script reading ZIP from chrome.storage.local with key: ${storageKey}`);
 
