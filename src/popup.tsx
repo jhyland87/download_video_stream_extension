@@ -89,6 +89,33 @@ function extractFilenameFromUrl(url: string): string {
 }
 
 /**
+ * Formats a page URL for display: domain + last 10 characters of path (without query/hash).
+ * @param url - The full URL to format
+ * @returns Formatted string like "example.com/.../path" or undefined if URL is invalid
+ */
+function formatPageUrl(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+
+  try {
+    const urlObj = new URL(url);
+    const domain = urlObj.hostname;
+    // Remove query params and hash
+    const pathWithoutQuery = urlObj.pathname;
+    // Get last 10 characters of path (or full path if shorter)
+    const lastPath = pathWithoutQuery.length > 10
+      ? '...' + pathWithoutQuery.slice(-10)
+      : pathWithoutQuery;
+
+    return `${domain}${lastPath}`;
+  } catch (error) {
+    // Invalid URL, return undefined
+    return undefined;
+  }
+}
+
+/**
  * Component for displaying and cycling through preview images on hover.
  */
 const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
@@ -154,6 +181,7 @@ const ManifestItem = ({ manifest, onDownload, onClear }: ManifestItemProps) => {
   const date = new Date(manifest.capturedAt);
   const timeStr = date.toLocaleTimeString();
   const displayTitle = manifest.title || manifest.fileName;
+  const formattedPageUrl = formatPageUrl(manifest.pageUrl);
 
   const infoParts: string[] = [];
 
@@ -186,6 +214,20 @@ const ManifestItem = ({ manifest, onDownload, onClear }: ManifestItemProps) => {
             ×
           </button>
         </div>
+        {formattedPageUrl && manifest.pageUrl && (
+          <a
+            href={manifest.pageUrl}
+            className="manifest-item-page-link"
+            title={manifest.pageUrl}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              chrome.tabs.create({ url: manifest.pageUrl });
+            }}
+          >
+            {formattedPageUrl}
+          </a>
+        )}
         <div className="manifest-item-info">{infoText}</div>
         <div className="manifest-item-actions">
           <button
@@ -259,6 +301,8 @@ const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
 /**
  * Main Popup component.
  */
+const ITEMS_PER_PAGE = 5;
+
 const Popup = () => {
   const [manifests, setManifests] = useState<ManifestSummary[]>([]);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
@@ -266,6 +310,7 @@ const Popup = () => {
   const [statusText, setStatusText] = useState<string>('Loading extension...');
   const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
   const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState<number>(1);
   const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Opens the side panel for ignore list management
@@ -295,6 +340,11 @@ const Popup = () => {
         if (response && 'manifestHistory' in response) {
           const statusResponse = response as GetStatusResponse;
           setManifests(statusResponse.manifestHistory);
+          // Reset to page 1 if current page is out of bounds
+          const totalPages = Math.ceil(statusResponse.manifestHistory.length / ITEMS_PER_PAGE);
+          if (currentPage > totalPages && totalPages > 0) {
+            setCurrentPage(1);
+          }
           if (statusResponse.manifestHistory.length === 0) {
             setStatusText('Monitoring for video streams...');
           } else {
@@ -310,7 +360,7 @@ const Popup = () => {
       setManifests([]);
       setStatusText('Error loading manifests');
     }
-  }, []);
+  }, [currentPage]);
 
   // Download manifest
   const downloadManifest = useCallback((manifestId: string, _format: DownloadFormat = 'zip') => {
@@ -483,6 +533,24 @@ const Popup = () => {
     };
   }, [updateStatus]);
 
+  // Calculate pagination
+  const totalPages = Math.ceil(manifests.length / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const paginatedManifests = manifests.slice(startIndex, endIndex);
+
+  const handlePreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
   return (
     <div>
       <h1>Stream Video Saver</h1>
@@ -497,7 +565,7 @@ const Popup = () => {
         {manifests.length === 0 ? (
           <div>No manifests captured yet. Navigate to a page with video streams.</div>
         ) : (
-          manifests.map((manifest) => (
+          paginatedManifests.map((manifest) => (
             <ManifestItem
               key={manifest.id}
               manifest={manifest}
@@ -507,6 +575,28 @@ const Popup = () => {
           ))
         )}
       </div>
+
+      {manifests.length > ITEMS_PER_PAGE && (
+        <div className="pagination">
+          <button
+            className="button secondary pagination-btn"
+            onClick={handlePreviousPage}
+            disabled={currentPage === 1}
+          >
+            Previous
+          </button>
+          <div className="pagination-info">
+            Page {currentPage} of {totalPages}
+          </div>
+          <button
+            className="button secondary pagination-btn"
+            onClick={handleNextPage}
+            disabled={currentPage === totalPages}
+          >
+            Next
+          </button>
+        </div>
+      )}
 
       {manifests.length > 0 && (
         <button

@@ -148,6 +148,7 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
       capturedAt: m.capturedAt,
       resolution: m.resolution,
       duration: m.duration,
+      pageUrl: m.pageUrl,
       previewUrls: m.previewUrls,
       urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
       dedupKey: m.title && m.expectedSegments.length > 0
@@ -175,6 +176,7 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
       capturedAt: m.capturedAt,
       resolution: m.resolution,
       duration: m.duration,
+      pageUrl: m.pageUrl,
       previewUrls: m.previewUrls
     }))
     // Sort by capturedAt in descending order (most recent first)
@@ -546,6 +548,20 @@ async function processM3U8Content(
   if (duplicateCheck) {
     // Update existing manifest with newer data (keep most recent)
     logger.log(`Duplicate detected, updating existing manifest: ${duplicateCheck.id}`);
+    
+    // Get page URL if available (for updating existing manifest)
+    let pageUrl: string | undefined;
+    if (details.tabId && details.tabId > 0) {
+      try {
+        const tab = await chrome.tabs.get(details.tabId);
+        if (tab && tab.url) {
+          pageUrl = tab.url;
+        }
+      } catch (error) {
+        // Tab might not be available
+      }
+    }
+    
     duplicateCheck.m3u8Url = url; // Update URL in case query params changed
     duplicateCheck.m3u8Content = text; // Update content
     duplicateCheck.m3u8FileName = fileName; // Update filename
@@ -554,6 +570,10 @@ async function processM3U8Content(
     duplicateCheck.capturedAt = new Date().toISOString(); // Update timestamp
     duplicateCheck.resolution = resolution || duplicateCheck.resolution; // Update resolution if available
     duplicateCheck.duration = duration || duplicateCheck.duration; // Update duration if available
+    if (pageUrl) {
+      duplicateCheck.pageUrl = pageUrl; // Update page URL
+      duplicateCheck.pageDomain = extractDomain(pageUrl); // Update page domain
+    }
     // Preview URLs will be updated asynchronously via capturePreviewAsync
 
     // Notify popup that manifest was updated
@@ -571,16 +591,18 @@ async function processM3U8Content(
     return;
   }
 
-  // Get page domain for ignore list filtering
+  // Get page domain and URL for ignore list filtering and display
   let pageDomain: string | undefined;
+  let pageUrl: string | undefined;
   if (details.tabId && details.tabId > 0) {
     try {
       const tab = await chrome.tabs.get(details.tabId);
       if (tab && tab.url) {
+        pageUrl = tab.url;
         pageDomain = extractDomain(tab.url);
       }
     } catch (error) {
-      // Tab might not be available, skip storing page domain
+      // Tab might not be available, skip storing page domain/URL
     }
   }
 
@@ -598,6 +620,7 @@ async function processM3U8Content(
     duration: duration,
     tabId: details.tabId && details.tabId > 0 ? details.tabId : undefined,
     pageDomain: pageDomain,
+    pageUrl: pageUrl,
     previewUrls: undefined // Will be updated when preview is ready
   };
 

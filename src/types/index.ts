@@ -33,6 +33,7 @@ export interface Manifest {
   duration?: number; // Video duration in seconds
   tabId?: number; // Tab ID where the manifest was captured (for title extraction)
   pageDomain?: string; // Domain of the page where the manifest was captured (for ignore list filtering)
+  pageUrl?: string; // Full URL of the page where the manifest was captured
   previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
@@ -48,6 +49,7 @@ export interface ManifestSummary {
   capturedAt: string;
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
+  pageUrl?: string; // Full URL of the page where the manifest was captured
   previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
