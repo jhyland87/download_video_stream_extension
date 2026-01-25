@@ -8,7 +8,7 @@ import type {
   AddToIgnoreListMessage,
   RemoveFromIgnoreListMessage,
   IgnoreListResponse
-} from './ignore-list.js';
+} from './ignore-list';
 
 /**
  * Video resolution information
@@ -495,7 +495,7 @@ export type {
   PreviewImageProps,
   ManifestItemProps,
   ProgressBarProps
-} from './popup.js';
+} from './popup';
 
 // Re-export ignore list types
 export type {
@@ -504,7 +504,7 @@ export type {
   AddToIgnoreListMessage,
   RemoveFromIgnoreListMessage,
   IgnoreListResponse
-} from './ignore-list.js';
+} from './ignore-list';
 
 // Re-export type guards from guards.ts for convenience
 export {
@@ -521,5 +521,5 @@ export {
   isHTMLElement,
   isHTMLDivElement,
   isHTMLButtonElement
-} from './guards.js';
+} from './guards';
 

@@ -11,8 +11,8 @@ import type {
   GetCurrentTabResponse,
   AddToIgnoreListMessage,
   RemoveFromIgnoreListMessage
-} from './types/index.js';
-import { logger } from './utils/logger.js';
+} from './types';
+import { logger } from './utils/logger';
 
 /**
  * Extracts domain from a URL.

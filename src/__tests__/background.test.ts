@@ -11,8 +11,8 @@ import type {
   DownloadProgress,
   ManifestSummaryWithUrlKey,
   ManifestSummaryWithDedupKeys
-} from '../types/index.js';
-import { setupChromeMock, setupJSZipMock, clearChromeStorage } from '../__mocks__/index.js';
+} from '../types';
+import { setupChromeMock, setupJSZipMock, clearChromeStorage } from '../__mocks__';
 
 /**
  * Unit tests for background script functions

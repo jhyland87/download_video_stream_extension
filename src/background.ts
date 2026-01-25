@@ -26,8 +26,8 @@ import type {
   ManifestSummaryWithDedupKeys,
   WebRequestBodyDetailsWithTabId,
   WebRequestBodyDetailsWithHeaders,
-} from './types/index.js';
-import { logger } from './utils/logger.js';
+} from './types';
+import { logger } from './utils/logger';
 
 /**
  * Regular expression pattern to match m3u8 files in URLs.

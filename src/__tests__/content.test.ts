@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { setupDOMMocks } from '../__mocks__/index.js';
+import { setupDOMMocks } from '../__mocks__';
 
 /**
  * Unit tests for content script functions

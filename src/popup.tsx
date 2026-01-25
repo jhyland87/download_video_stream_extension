@@ -27,8 +27,8 @@ import type {
   ManifestItemProps,
   ProgressBarProps,
   AddToIgnoreListMessage
-} from './types/index.js';
-import { logger } from './utils/logger.js';
+} from './types';
+import { logger } from './utils/logger';
 
 // CRITICAL: This should appear in console immediately when script loads
 logger.log('popup.tsx loaded - script is executing');

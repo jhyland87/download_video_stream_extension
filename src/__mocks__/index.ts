@@ -1,6 +1,6 @@
 /**
  * Central export for all mocks
  */
-export * from './chrome.js';
-export * from './jszip.js';
-export * from './dom.js';
+export * from './chrome';
+export * from './jszip';
+export * from './dom';

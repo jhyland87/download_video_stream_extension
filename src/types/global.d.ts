@@ -16,22 +16,22 @@ import type {
   GetManifestDataResponse,
   GetDownloadStatusResponse,
   SuccessResponse
-} from './index.js';
+} from '.';
 
 // Make types available globally for service worker
 declare global {
-  type Manifest = import('./index.js').Manifest;
-  type ManifestSummary = import('./index.js').ManifestSummary;
-  type DownloadFormat = import('./index.js').DownloadFormat;
-  type DownloadStatus = import('./index.js').DownloadStatus;
-  type DownloadProgress = import('./index.js').DownloadProgress;
-  type ActiveDownload = import('./index.js').ActiveDownload;
-  type ExtensionMessage = import('./index.js').ExtensionMessage;
-  type ExtensionResponse = import('./index.js').ExtensionResponse;
-  type GetStatusResponse = import('./index.js').GetStatusResponse;
-  type GetManifestDataResponse = import('./index.js').GetManifestDataResponse;
-  type GetDownloadStatusResponse = import('./index.js').GetDownloadStatusResponse;
-  type SuccessResponse = import('./index.js').SuccessResponse;
+  type Manifest = import('.').Manifest;
+  type ManifestSummary = import('.').ManifestSummary;
+  type DownloadFormat = import('.').DownloadFormat;
+  type DownloadStatus = import('.').DownloadStatus;
+  type DownloadProgress = import('.').DownloadProgress;
+  type ActiveDownload = import('.').ActiveDownload;
+  type ExtensionMessage = import('.').ExtensionMessage;
+  type ExtensionResponse = import('.').ExtensionResponse;
+  type GetStatusResponse = import('.').GetStatusResponse;
+  type GetManifestDataResponse = import('.').GetManifestDataResponse;
+  type GetDownloadStatusResponse = import('.').GetDownloadStatusResponse;
+  type SuccessResponse = import('.').SuccessResponse;
 }
 
 export {};

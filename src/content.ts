@@ -3,7 +3,7 @@
  * This script runs in the context of web pages to extract video metadata and capture frames
  */
 
-import { logger } from './utils/logger.js';
+import { logger } from './utils/logger';
 import type {
   ExtensionMessage,
   ContentScriptResponse,
@@ -13,7 +13,7 @@ import type {
   CreateBlobUrlFromChunksMessage,
   CleanupZipChunksMessage,
   CreateBlobUrlFromStorageMessage
-} from './types/index.js';
+} from './types';
 import {
   isGetVideoPreviewMessage,
   isCreateBlobUrlMessage,
@@ -22,7 +22,7 @@ import {
   isCleanupZipChunksMessage,
   isArrayBuffer,
   isFileReaderStringResult
-} from './types/guards.js';
+} from './types/guards';
 
 /**
  * Preview frame timestamps (in seconds) to capture from videos.

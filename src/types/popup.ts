@@ -2,7 +2,7 @@
  * Type definitions for popup React components
  */
 
-import type { ManifestSummary, DownloadProgress } from './index.js';
+import type { ManifestSummary, DownloadProgress } from '.';
 
 /**
  * Props for the PreviewImage component

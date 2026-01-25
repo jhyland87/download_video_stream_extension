@@ -10,7 +10,7 @@ import {
   isDownloadProgressMessage,
   isDownloadErrorMessage,
   isManifestCapturedMessage
-} from '../index.js';
+} from '..';
 import type {
   GetStatusMessage,
   GetManifestDataMessage,
@@ -21,7 +21,7 @@ import type {
   DownloadProgressMessage,
   DownloadErrorMessage,
   ManifestCapturedMessage
-} from './index.js';
+} from '.';
 
 describe('Type guards', () => {
   describe('isMessageAction', () => {

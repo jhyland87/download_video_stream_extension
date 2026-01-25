@@ -18,7 +18,7 @@ import type {
   ReceiveZipChunkMessage,
   CreateBlobUrlFromChunksMessage,
   CleanupZipChunksMessage
-} from './index.js';
+} from '.';
 
 /**
  * Type guard to check if value is a valid message action

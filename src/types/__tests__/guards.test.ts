@@ -3,7 +3,7 @@ import {
   isHTMLElement,
   isHTMLDivElement,
   isHTMLButtonElement
-} from '../guards.js';
+} from '../guards';
 
 /**
  * Unit tests for DOM element type guards
