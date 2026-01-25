@@ -23,6 +23,9 @@ import type {
   RemoveFromIgnoreListMessage,
   IgnoreListResponse,
   GetCurrentTabResponse,
+  ManifestSummaryWithDedupKeys,
+  WebRequestBodyDetailsWithTabId,
+  WebRequestBodyDetailsWithHeaders,
 } from './types/index.js';
 import { logger } from './utils/logger.js';
 
@@ -250,7 +253,7 @@ async function handleGetStatus(message: GetStatusMessage, sendResponse: (respons
     }));
 
   // Group by dedupKey and keep only the most recent one for each group
-  const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
+  const groupedByKey = new Map<string, ManifestSummaryWithDedupKeys>();
   for (const m of manifestsWithSegments) {
     const existing = groupedByKey.get(m.dedupKey);
     if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
@@ -556,7 +559,7 @@ async function handleGetCurrentTab(sendResponse: (response: ExtensionResponse) =
 async function processM3U8Content(
   url: string,
   text: string,
-  details: chrome.webRequest.WebRequestBodyDetails & { tabId?: number }
+  details: WebRequestBodyDetailsWithTabId
 ): Promise<void> {
   // Extract filename for display
   let fileName: string;
@@ -1345,7 +1348,7 @@ const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
  * Filters for VOD playlists only, fetches content, parses segments, and stores in manifest history.
  * @param details - Details about the completed request
  */
-async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyDetails & { requestHeaders?: chrome.webRequest.HttpHeader[] }): Promise<void> {
+async function handleRequestCompleted(details: WebRequestBodyDetailsWithHeaders): Promise<void> {
   const url = details.url;
 
   // Check if it's an m3u8 file

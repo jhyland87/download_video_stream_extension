@@ -55,6 +55,39 @@ export interface ManifestSummary {
 }
 
 /**
+ * ManifestSummary with deduplication helper keys
+ * Used internally for grouping and deduplication logic
+ */
+export interface ManifestSummaryWithDedupKeys extends ManifestSummary {
+  urlKey: string; // URL without query params for deduplication
+  dedupKey: string; // Title + segment count or URL for deduplication
+}
+
+/**
+ * ManifestSummary with URL key for deduplication
+ * Used internally for deduplication logic that only needs urlKey
+ */
+export interface ManifestSummaryWithUrlKey extends ManifestSummary {
+  urlKey: string; // URL without query params for deduplication
+}
+
+/**
+ * Chrome webRequest details with optional tabId
+ * Used when processing m3u8 content that may have tabId information
+ */
+export type WebRequestBodyDetailsWithTabId = Omit<chrome.webRequest.WebRequestBodyDetails, 'tabId'> & {
+  tabId?: number;
+};
+
+/**
+ * Chrome webRequest details with optional request headers
+ * Used when handling completed requests that may include request headers
+ */
+export interface WebRequestBodyDetailsWithHeaders extends chrome.webRequest.WebRequestBodyDetails {
+  requestHeaders?: chrome.webRequest.HttpHeader[];
+}
+
+/**
  * Download format type
  */
 export type DownloadFormat = 'zip';

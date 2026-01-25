@@ -8,7 +8,9 @@ import type {
   GetDownloadStatusResponse,
   ExtensionResponse,
   ActiveDownload,
-  DownloadProgress
+  DownloadProgress,
+  ManifestSummaryWithUrlKey,
+  ManifestSummaryWithDedupKeys
 } from '../types/index.js';
 import { setupChromeMock, setupJSZipMock, clearChromeStorage } from '../__mocks__/index.js';
 
@@ -162,7 +164,7 @@ describe('Manifest filtering logic', () => {
     ];
 
     // Replicate the exact filtering logic from background.ts
-    const seen = new Map<string, ManifestSummary & { urlKey: string }>();
+    const seen = new Map<string, ManifestSummaryWithUrlKey>();
     const filtered = manifests
       .filter((m) => m.expectedSegments.length > 0)
       .map((m) => ({
@@ -417,7 +419,7 @@ function testableHandleGetStatus(
         : m.m3u8Url.split('?')[0]
     }));
 
-  const groupedByKey = new Map<string, ManifestSummary & { urlKey: string; dedupKey: string }>();
+  const groupedByKey = new Map<string, ManifestSummaryWithDedupKeys>();
   for (const m of manifestsWithSegments) {
     const existing = groupedByKey.get(m.dedupKey);
     if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
