@@ -9,3 +9,8 @@
 // Declare JSZip as a global since we load it via importScripts
 declare const JSZip: typeof import('jszip');
 
+// Extend global namespace to allow assignment to global.JSZip
+declare global {
+  // eslint-disable-next-line no-var
+  var JSZip: typeof import('jszip');
+}

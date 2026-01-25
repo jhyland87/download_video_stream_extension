@@ -25,7 +25,8 @@ import type {
   DownloadProgress,
   PreviewImageProps,
   ManifestItemProps,
-  ProgressBarProps
+  ProgressBarProps,
+  AddToIgnoreListMessage
 } from './types/index.js';
 import { logger } from './utils/logger.js';
 
@@ -303,6 +304,12 @@ const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
  */
 const ITEMS_PER_PAGE = 5;
 
+interface DomainGroup {
+  domain: string;
+  manifests: ManifestSummary[];
+  mostRecentCapture: string; // ISO timestamp of most recent manifest in group
+}
+
 const Popup = () => {
   const [manifests, setManifests] = useState<ManifestSummary[]>([]);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
@@ -311,6 +318,7 @@ const Popup = () => {
   const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
   const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [mostRecentDomain, setMostRecentDomain] = useState<string | null>(null);
   const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Opens the side panel for ignore list management
@@ -327,9 +335,18 @@ const Popup = () => {
   }, []);
 
   // Update manifest status
-  const updateStatus = useCallback(() => {
+  const updateStatus = useCallback(async () => {
     try {
-      chrome.runtime.sendMessage({ action: 'getStatus' } as ExtensionMessage, (response: ExtensionResponse) => {
+      // Get the current window ID to filter manifests by window
+      let windowId: number | undefined;
+      try {
+        const currentWindow = await chrome.windows.getCurrent();
+        windowId = currentWindow.id;
+      } catch (error) {
+        // If we can't get the window, continue without window ID
+      }
+      
+      chrome.runtime.sendMessage({ action: 'getStatus', windowId } as ExtensionMessage, (response: ExtensionResponse) => {
         if (chrome.runtime.lastError) {
           logger.error('Error getting status:', chrome.runtime.lastError);
           setManifests([]);
@@ -339,16 +356,24 @@ const Popup = () => {
 
         if (response && 'manifestHistory' in response) {
           const statusResponse = response as GetStatusResponse;
-          setManifests(statusResponse.manifestHistory);
-          // Reset to page 1 if current page is out of bounds
-          const totalPages = Math.ceil(statusResponse.manifestHistory.length / ITEMS_PER_PAGE);
-          if (currentPage > totalPages && totalPages > 0) {
-            setCurrentPage(1);
+          const newManifests = statusResponse.manifestHistory;
+          
+          // Track the most recently captured domain (first manifest is most recent)
+          if (newManifests.length > 0) {
+            const mostRecent = newManifests[0];
+            if (mostRecent.pageDomain) {
+              setMostRecentDomain(mostRecent.pageDomain);
+              // Clear the flag after a short delay so it only affects the immediate sort
+              setTimeout(() => setMostRecentDomain(null), 100);
+            }
           }
-          if (statusResponse.manifestHistory.length === 0) {
+          
+          setManifests(newManifests);
+          
+          if (newManifests.length === 0) {
             setStatusText('Monitoring for video streams...');
           } else {
-            setStatusText(`${statusResponse.manifestHistory.length} manifest${statusResponse.manifestHistory.length > 1 ? 's' : ''} captured`);
+            setStatusText(`${newManifests.length} manifest${newManifests.length > 1 ? 's' : ''} captured`);
           }
         } else {
           setManifests([]);
@@ -360,7 +385,7 @@ const Popup = () => {
       setManifests([]);
       setStatusText('Error loading manifests');
     }
-  }, [currentPage]);
+  }, []);
 
   // Download manifest
   const downloadManifest = useCallback((manifestId: string, _format: DownloadFormat = 'zip') => {
@@ -439,6 +464,70 @@ const Popup = () => {
     });
   }, [updateStatus]);
 
+  // Group manifests by domain and sort
+  const groupManifestsByDomain = useCallback((manifestsList: ManifestSummary[]): DomainGroup[] => {
+    // Group by domain
+    const domainMap = new Map<string, ManifestSummary[]>();
+    for (const manifest of manifestsList) {
+      const domain = manifest.pageDomain || 'Unknown Domain';
+      if (!domainMap.has(domain)) {
+        domainMap.set(domain, []);
+      }
+      domainMap.get(domain)!.push(manifest);
+    }
+
+    // Sort within each group by capturedAt (newest first)
+    const groups: DomainGroup[] = [];
+    for (const [domain, domainManifests] of domainMap.entries()) {
+      const sorted = domainManifests.sort(
+        (a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime()
+      );
+      const mostRecentCapture = sorted[0]?.capturedAt || '';
+      groups.push({
+        domain,
+        manifests: sorted,
+        mostRecentCapture
+      });
+    }
+
+    // Sort groups by most recent capture (newest first)
+    // If a domain was just captured, bump it to the top
+    groups.sort((a, b) => {
+      // If mostRecentDomain is set and matches a group, prioritize it
+      if (mostRecentDomain && a.domain === mostRecentDomain) {
+        return -1;
+      }
+      if (mostRecentDomain && b.domain === mostRecentDomain) {
+        return 1;
+      }
+      // Otherwise sort by most recent capture
+      return new Date(b.mostRecentCapture).getTime() - new Date(a.mostRecentCapture).getTime();
+    });
+
+    return groups;
+  }, [mostRecentDomain]);
+
+  // Block a domain (add to ignore list and remove manifests)
+  const blockDomain = useCallback((domain: string) => {
+    chrome.runtime.sendMessage({
+      action: 'addToIgnoreList',
+      domain: domain
+    } as AddToIgnoreListMessage, (response: ExtensionResponse) => {
+      if (chrome.runtime.lastError) {
+        const errorMsg = chrome.runtime.lastError.message || 'Unknown error';
+        setError(errorMsg);
+        return;
+      }
+      if (response && 'error' in response) {
+        const errorMsg = response.error || 'Unknown error';
+        setError(errorMsg);
+        return;
+      }
+      // Success - update status to refresh the list
+      updateStatus();
+    });
+  }, [updateStatus]);
+
   // Message listener
   useEffect(() => {
     const messageListener = (message: ExtensionMessage) => {
@@ -470,6 +559,8 @@ const Popup = () => {
       } else if (message.action === 'manifestCaptured') {
         const capturedMessage = message as ManifestCapturedMessage;
         logger.log(`Manifest captured: ${capturedMessage.fileName}`);
+        // Track the most recently captured domain to bump it to top
+        // We'll get the domain from the updated status
         updateStatus();
       } else if (message.action === 'previewUpdated') {
         const previewMessage = message as PreviewUpdatedMessage;
@@ -533,11 +624,21 @@ const Popup = () => {
     };
   }, [updateStatus]);
 
-  // Calculate pagination
-  const totalPages = Math.ceil(manifests.length / ITEMS_PER_PAGE);
+  // Group manifests by domain
+  const domainGroups = groupManifestsByDomain(manifests);
+  
+  // Calculate pagination by groups (each group can contain multiple manifests)
+  const totalPages = Math.ceil(domainGroups.length / ITEMS_PER_PAGE);
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const endIndex = startIndex + ITEMS_PER_PAGE;
-  const paginatedManifests = manifests.slice(startIndex, endIndex);
+  const paginatedGroups = domainGroups.slice(startIndex, endIndex);
+  
+  // Reset to page 1 if current page is out of bounds
+  useEffect(() => {
+    if (domainGroups.length > 0 && currentPage > totalPages) {
+      setCurrentPage(1);
+    }
+  }, [domainGroups.length, totalPages, currentPage]);
 
   const handlePreviousPage = () => {
     if (currentPage > 1) {
@@ -565,18 +666,35 @@ const Popup = () => {
         {manifests.length === 0 ? (
           <div>No manifests captured yet. Navigate to a page with video streams.</div>
         ) : (
-          paginatedManifests.map((manifest) => (
-            <ManifestItem
-              key={manifest.id}
-              manifest={manifest}
-              onDownload={downloadManifest}
-              onClear={clearManifest}
-            />
+          paginatedGroups.map((group) => (
+            <div key={group.domain} className="domain-group">
+              <div className="domain-group-header">
+                <span className="domain-group-title">{group.domain}</span>
+                <button
+                  className="btn-block-domain"
+                  onClick={() => blockDomain(group.domain)}
+                  title={`Block ${group.domain} and remove all manifests from this domain`}
+                  aria-label={`Block ${group.domain}`}
+                >
+                  🚫
+                </button>
+              </div>
+              <div className="domain-group-manifests">
+                {group.manifests.map((manifest) => (
+                  <ManifestItem
+                    key={manifest.id}
+                    manifest={manifest}
+                    onDownload={downloadManifest}
+                    onClear={clearManifest}
+                  />
+                ))}
+              </div>
+            </div>
           ))
         )}
       </div>
 
-      {manifests.length > ITEMS_PER_PAGE && (
+      {domainGroups.length > ITEMS_PER_PAGE && (
         <div className="pagination">
           <button
             className="button secondary pagination-btn"

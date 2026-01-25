@@ -12,6 +12,7 @@
 
 // Import message types for type annotations
 import type {
+  GetStatusMessage,
   GetManifestDataMessage,
   ClearManifestMessage,
   SegmentDownloadedMessage,
@@ -42,9 +43,83 @@ const RETRY_BATCH_SIZE = 5;
 const MAX_MANIFEST_HISTORY = 100;
 
 /**
- * Array of captured manifest objects.
+ * Storage key prefix for manifest history in session storage.
+ * We'll append the window ID to make it per-window.
  */
-let manifestHistory: Manifest[] = [];
+const MANIFEST_HISTORY_STORAGE_KEY_PREFIX = 'manifestHistory_';
+
+/**
+ * Get the current window ID.
+ */
+async function getCurrentWindowId(): Promise<number | null> {
+  try {
+    const currentWindow = await chrome.windows.getCurrent();
+    return currentWindow.id ?? null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Get the window ID for a tab.
+ */
+async function getTabWindowId(tabId: number): Promise<number | null> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab.windowId ?? null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Get the tab ID from a manifest by looking it up in the manifest history.
+ */
+async function getTabIdFromManifest(manifestId: string): Promise<number | undefined> {
+  try {
+    // Try to find the manifest in the current window's storage
+    const currentWindowId = await getCurrentWindowId();
+    let manifestHistory = await loadManifestHistory(currentWindowId);
+    let manifest = manifestHistory.find((m) => m.id === manifestId);
+
+    // If not found, try default storage (for backward compatibility)
+    if (!manifest) {
+      manifestHistory = await loadManifestHistory(null);
+      manifest = manifestHistory.find((m) => m.id === manifestId);
+    }
+
+    return manifest?.tabId;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Get the storage key for a specific window ID.
+ */
+function getStorageKey(windowId: number | null): string {
+  // Use a default key if window ID is not available
+  return windowId !== null
+    ? `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}${windowId}`
+    : `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}default`;
+}
+
+/**
+ * Load manifest history from session storage for a specific window.
+ */
+async function loadManifestHistory(windowId: number | null): Promise<Manifest[]> {
+  const storageKey = getStorageKey(windowId);
+  const result = await chrome.storage.session.get(storageKey);
+  return result[storageKey] || [];
+}
+
+/**
+ * Save manifest history to session storage for a specific window.
+ */
+async function saveManifestHistory(manifests: Manifest[], windowId: number | null): Promise<void> {
+  const storageKey = getStorageKey(windowId);
+  await chrome.storage.session.set({ [storageKey]: manifests });
+}
 
 /**
  * Map tracking active downloads.
@@ -115,15 +190,32 @@ chrome.webRequest.onCompleted.addListener(
 
 /**
  * Handles the 'getStatus' action by filtering and deduplicating manifests.
+ * @param message - The getStatus message (may include windowId)
  * @param sendResponse - Function to send the response back
  */
-async function handleGetStatus(sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+async function handleGetStatus(message: GetStatusMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
   // Get ignored domains
-  const ignoredDomains = await new Promise<string[]>((resolve) => {
-    chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
-      resolve(result[IGNORE_LIST_STORAGE_KEY] || []);
-    });
-  });
+  const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+  const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+
+  // Use the window ID from the message if provided, otherwise try to detect it
+  // Convert undefined to null for consistency
+  let currentWindowId: number | null = (message.windowId !== undefined ? message.windowId : null);
+
+  if (currentWindowId === null) {
+    // Fallback: try to get from active tab
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs.length > 0 && tabs[0].windowId) {
+        currentWindowId = tabs[0].windowId;
+      }
+    } catch (error) {
+      // Fallback to getCurrentWindowId if query fails
+      currentWindowId = await getCurrentWindowId();
+    }
+  }
+
+  const manifestHistory = await loadManifestHistory(currentWindowId);
 
   // Filter out manifests with no segments, ignored page domains, and remove duplicates
   // Group by URL (without query params) OR (title + segment count) and keep only the most recent one
@@ -149,6 +241,7 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
       resolution: m.resolution,
       duration: m.duration,
       pageUrl: m.pageUrl,
+      pageDomain: m.pageDomain,
       previewUrls: m.previewUrls,
       urlKey: m.m3u8Url.split('?')[0], // URL without query params for deduplication
       dedupKey: m.title && m.expectedSegments.length > 0
@@ -167,20 +260,10 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
 
   // Convert map values to array and remove helper keys
   const filtered = Array.from(groupedByKey.values())
-    .map((m) => ({
-      id: m.id,
-      fileName: m.fileName,
-      title: m.title,
-      url: m.url,
-      segmentCount: m.segmentCount,
-      capturedAt: m.capturedAt,
-      resolution: m.resolution,
-      duration: m.duration,
-      pageUrl: m.pageUrl,
-      previewUrls: m.previewUrls
-    }))
-    // Sort by capturedAt in descending order (most recent first)
-    .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+    .map((m) => {
+      const { urlKey, dedupKey, ...summary } = m;
+      return summary;
+    });
 
   //logger.log(` getStatus: returning ${filtered.length} manifests (filtered from ${manifestHistory.length} total, removed ${manifestHistory.length - filtered.length} with no segments or duplicates)`);
   //logger.log(` Manifest IDs: ${filtered.map((m) => m.id).join(', ')}`);
@@ -188,6 +271,9 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
     manifestHistory: filtered
   };
   sendResponse(response);
+
+  // Update badge with manifest count (only if no active downloads)
+  await updateManifestCountBadge(currentWindowId);
 }
 
 /**
@@ -195,8 +281,10 @@ async function handleGetStatus(sendResponse: (response: ExtensionResponse) => vo
  * @param message - The getManifestData message
  * @param sendResponse - Function to send the response back
  */
-function handleGetManifestData(message: GetManifestDataMessage, sendResponse: (response: ExtensionResponse) => void): void {
-  // Get data for a specific manifest by ID
+async function handleGetManifestData(message: GetManifestDataMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  // Get data for a specific manifest by ID - check current window's storage
+  const currentWindowId = await getCurrentWindowId();
+  const manifestHistory = await loadManifestHistory(currentWindowId);
   const manifest = manifestHistory.find((m) => m.id === message.manifestId);
   if (manifest) {
     const response: GetManifestDataResponse = {
@@ -217,15 +305,36 @@ function handleGetManifestData(message: GetManifestDataMessage, sendResponse: (r
  * @param message - The clearManifest message
  * @param sendResponse - Function to send the response back
  */
-function handleClearManifest(message: ClearManifestMessage, sendResponse: (response: ExtensionResponse) => void): void {
+async function handleClearManifest(message: ClearManifestMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  // Get the window ID from the active tab
+  let currentWindowId: number | null = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs.length > 0 && tabs[0].windowId) {
+      currentWindowId = tabs[0].windowId;
+    }
+  } catch (error) {
+    currentWindowId = await getCurrentWindowId();
+  }
+
+  const manifestHistory = await loadManifestHistory(currentWindowId);
+
   // Clear a specific manifest or all manifests
+  let updatedHistory: Manifest[];
   if (message.manifestId) {
-    manifestHistory = manifestHistory.filter((m) => m.id !== message.manifestId);
-    logger.log(`✅ Manifest cleared: ${message.manifestId}. Remaining: ${manifestHistory.length}`);
+    updatedHistory = manifestHistory.filter((m) => m.id !== message.manifestId);
+    logger.log(`✅ Manifest cleared: ${message.manifestId}. Remaining: ${updatedHistory.length}`);
   } else {
-    manifestHistory = [];
+    updatedHistory = [];
     logger.log('✅ All manifests cleared');
   }
+
+  // Save updated history
+  await saveManifestHistory(updatedHistory, currentWindowId);
+
+  // Update badge with manifest count (only if no active downloads)
+  await updateManifestCountBadge(currentWindowId);
+
   const response: SuccessResponse = { success: true };
   sendResponse(response);
 }
@@ -326,12 +435,11 @@ async function isDomainIgnored(domain: string): Promise<boolean> {
  * Handles the 'getIgnoreList' action by returning the list of ignored domains.
  * @param sendResponse - Function to send the response back
  */
-function handleGetIgnoreList(sendResponse: (response: ExtensionResponse) => void): void {
-  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
-    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
-    const response: IgnoreListResponse = { domains: ignoredDomains };
-    sendResponse(response);
-  });
+async function handleGetIgnoreList(sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+  const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+  const response: IgnoreListResponse = { domains: ignoredDomains };
+  sendResponse(response);
 }
 
 /**
@@ -340,47 +448,62 @@ function handleGetIgnoreList(sendResponse: (response: ExtensionResponse) => void
  * @param message - The message containing the domain to add
  * @param sendResponse - Function to send the response back
  */
-function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): void {
-  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
-    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+async function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+  const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
 
-    if (ignoredDomains.includes(message.domain)) {
-      sendResponse({ error: 'Domain already in ignore list' });
-      return;
+  if (ignoredDomains.includes(message.domain)) {
+    sendResponse({ error: 'Domain already in ignore list' });
+    return;
+  }
+
+  ignoredDomains.push(message.domain);
+  await chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: ignoredDomains });
+
+  // Remove all existing manifests from pages with this domain (check pageDomain, not m3u8Url domain)
+  // Update current window's storage
+  try {
+    // Get the window ID from the active tab
+    let currentWindowId: number | null = null;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs.length > 0 && tabs[0].windowId) {
+        currentWindowId = tabs[0].windowId;
+      }
+    } catch (error) {
+      currentWindowId = await getCurrentWindowId();
     }
 
-    ignoredDomains.push(message.domain);
-    chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: ignoredDomains }, () => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ error: chrome.runtime.lastError.message || 'Failed to save ignore list' });
-      } else {
-        // Remove all existing manifests from pages with this domain (check pageDomain, not m3u8Url domain)
-        const initialCount = manifestHistory.length;
-        manifestHistory = manifestHistory.filter((m) => {
-          // Filter out manifests where the page domain matches the ignored domain
-          return m.pageDomain !== message.domain;
-        });
-        const removedCount = initialCount - manifestHistory.length;
-
-        if (removedCount > 0) {
-          logger.log(` Removed ${removedCount} manifest(s) from ignored domain: ${message.domain}`);
-        }
-
-        // Notify popup that manifests were updated (this will trigger a refresh)
-        chrome.runtime.sendMessage({
-          action: 'manifestCaptured',
-          manifestId: '',
-          fileName: '',
-          title: '',
-          segmentCount: 0
-        } as ExtensionMessage).catch(() => {
-          // Ignore if no listeners
-        });
-
-        sendResponse({ success: true });
-      }
+    const manifestHistory = await loadManifestHistory(currentWindowId);
+    const initialCount = manifestHistory.length;
+    const updatedHistory = manifestHistory.filter((m) => {
+      return m.pageDomain !== message.domain;
     });
-  });
+    const removedCount = initialCount - updatedHistory.length;
+    await saveManifestHistory(updatedHistory, currentWindowId);
+
+    if (removedCount > 0) {
+      logger.log(` Removed ${removedCount} manifest(s) from ignored domain: ${message.domain}`);
+    }
+
+    // Update badge with manifest count (only if no active downloads)
+    await updateManifestCountBadge(currentWindowId);
+
+    // Notify popup that manifests were updated (this will trigger a refresh)
+    chrome.runtime.sendMessage({
+      action: 'manifestCaptured',
+      manifestId: '',
+      fileName: '',
+      title: '',
+      segmentCount: 0
+    } as ExtensionMessage).catch(() => {
+      // Ignore if no listeners
+    });
+
+    sendResponse({ success: true });
+  } catch (error) {
+    sendResponse({ error: error instanceof Error ? error.message : 'Failed to update manifests' });
+  }
 }
 
 /**
@@ -388,47 +511,40 @@ function handleAddToIgnoreList(message: AddToIgnoreListMessage, sendResponse: (r
  * @param message - The message containing the domain to remove
  * @param sendResponse - Function to send the response back
  */
-function handleRemoveFromIgnoreList(message: RemoveFromIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): void {
-  chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY, (result) => {
-    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
-    const filtered = ignoredDomains.filter(d => d !== message.domain);
+async function handleRemoveFromIgnoreList(message: RemoveFromIgnoreListMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+  const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+  const filtered = ignoredDomains.filter(d => d !== message.domain);
 
-    if (filtered.length === ignoredDomains.length) {
-      sendResponse({ error: 'Domain not found in ignore list' });
-      return;
-    }
+  if (filtered.length === ignoredDomains.length) {
+    sendResponse({ error: 'Domain not found in ignore list' });
+    return;
+  }
 
-    chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: filtered }, () => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ error: chrome.runtime.lastError.message || 'Failed to save ignore list' });
-      } else {
-        sendResponse({ success: true });
-      }
-    });
-  });
+  await chrome.storage.local.set({ [IGNORE_LIST_STORAGE_KEY]: filtered });
+  sendResponse({ success: true });
 }
 
 /**
  * Handles the 'getCurrentTab' action by returning information about the current active tab.
  * @param sendResponse - Function to send the response back
  */
-function handleGetCurrentTab(sendResponse: (response: ExtensionResponse) => void): void {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (tabs.length === 0 || !tabs[0].url) {
-      sendResponse({ error: 'No active tab found' });
-      return;
-    }
+async function handleGetCurrentTab(sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tabs.length === 0 || !tabs[0].url) {
+    sendResponse({ error: 'No active tab found' });
+    return;
+  }
 
-    const tab = tabs[0];
-    const url = tab.url;
-    const domain = url ? extractDomain(url) : undefined;
-    const response: GetCurrentTabResponse = {
-      url: url,
-      domain: domain,
-      title: tab.title
-    };
-    sendResponse(response);
-  });
+  const tab = tabs[0];
+  const url = tab.url;
+  const domain = url ? extractDomain(url) : undefined;
+  const response: GetCurrentTabResponse = {
+    url: url,
+    domain: domain,
+    title: tab.title
+  };
+  sendResponse(response);
 }
 
 /**
@@ -527,6 +643,12 @@ async function processM3U8Content(
     }
   }
 
+  // Get window ID for this tab and load manifest history
+  const windowId = details.tabId && details.tabId > 0
+    ? await getTabWindowId(details.tabId)
+    : null;
+  const manifestHistory = await loadManifestHistory(windowId);
+
   // Check for duplicates: same URL OR (same title AND same segment count)
   // This check happens after title is fetched so we can properly detect title+segment duplicates
   const urlWithoutQuery = url.split('?')[0];
@@ -548,7 +670,7 @@ async function processM3U8Content(
   if (duplicateCheck) {
     // Update existing manifest with newer data (keep most recent)
     logger.log(`Duplicate detected, updating existing manifest: ${duplicateCheck.id}`);
-    
+
     // Get page URL if available (for updating existing manifest)
     let pageUrl: string | undefined;
     if (details.tabId && details.tabId > 0) {
@@ -561,7 +683,7 @@ async function processM3U8Content(
         // Tab might not be available
       }
     }
-    
+
     duplicateCheck.m3u8Url = url; // Update URL in case query params changed
     duplicateCheck.m3u8Content = text; // Update content
     duplicateCheck.m3u8FileName = fileName; // Update filename
@@ -576,16 +698,54 @@ async function processM3U8Content(
     }
     // Preview URLs will be updated asynchronously via capturePreviewAsync
 
-    // Notify popup that manifest was updated
-    chrome.runtime.sendMessage({
-      action: 'manifestCaptured',
-      manifestId: duplicateCheck.id,
-      fileName: fileName,
-      title: title,
-      segmentCount: segmentUrls.length
-    } as ExtensionMessage).catch(() => {
-      // Ignore if no listeners
-    });
+    // Save updated manifest history
+    await saveManifestHistory(manifestHistory, windowId);
+
+    // Notify popup in the same window that manifest was updated
+    // Only send to tabs in the same window
+    if (details.tabId && details.tabId > 0 && windowId !== null) {
+      try {
+        const tabs = await chrome.tabs.query({ windowId: windowId });
+        for (const tab of tabs) {
+          try {
+            await chrome.tabs.sendMessage(tab.id!, {
+              action: 'manifestCaptured',
+              manifestId: duplicateCheck.id,
+              fileName: fileName,
+              title: title,
+              segmentCount: segmentUrls.length
+            } as ExtensionMessage);
+          } catch {
+            // Ignore if content script not available
+          }
+        }
+      } catch (error) {
+        // Fallback to broadcast if we can't get tabs
+        chrome.runtime.sendMessage({
+          action: 'manifestCaptured',
+          manifestId: duplicateCheck.id,
+          fileName: fileName,
+          title: title,
+          segmentCount: segmentUrls.length
+        } as ExtensionMessage).catch(() => {
+          // Ignore if no listeners
+        });
+      }
+    } else {
+      // Fallback to broadcast if we don't have window info
+      chrome.runtime.sendMessage({
+        action: 'manifestCaptured',
+        manifestId: duplicateCheck.id,
+        fileName: fileName,
+        title: title,
+        segmentCount: segmentUrls.length
+      } as ExtensionMessage).catch(() => {
+        // Ignore if no listeners
+      });
+    }
+
+    // Update badge with manifest count (only if no active downloads)
+    await updateManifestCountBadge(windowId);
 
     logger.groupEnd();
     return;
@@ -634,6 +794,12 @@ async function processM3U8Content(
     logger.log(`Trimmed manifest history: removed ${excess} oldest manifests (keeping ${MAX_MANIFEST_HISTORY} most recent)`);
   }
 
+  // Save updated manifest history to session storage
+  await saveManifestHistory(manifestHistory, windowId);
+
+  // Update badge with manifest count (only if no active downloads)
+  await updateManifestCountBadge(windowId);
+
   logger.log(`✅ M3U8 captured and added to history`);
   logger.log(`📋 Found ${segmentUrls.length} segments`);
   logger.log(`📚 Total manifests in history: ${manifestHistory.length}`);
@@ -678,7 +844,9 @@ async function capturePreviewAsync(tabId: number, manifestId: string): Promise<v
   logger.groupCollapsed(` Starting async preview capture: manifest ${manifestId}`);
   logger.log(`Tab ID: ${tabId}`);
 
-  // Initialize previewUrls array in manifest
+  // Get window ID and load manifest history
+  const windowId = await getTabWindowId(tabId);
+  const manifestHistory = await loadManifestHistory(windowId);
   const manifest = manifestHistory.find((m) => m.id === manifestId);
   if (!manifest) {
     logger.log(`Manifest not found when starting preview capture`);
@@ -703,6 +871,43 @@ async function capturePreviewAsync(tabId: number, manifestId: string): Promise<v
 }
 
 /**
+ * Updates the badge when the active window or tab changes.
+ * This ensures the badge always shows the manifest count for the currently active window.
+ */
+async function updateBadgeOnWindowChange(): Promise<void> {
+  // Only update if there are no active downloads
+  if (activeDownloads.size > 0) {
+    return;
+  }
+
+  try {
+    // Get the active tab's window ID
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs.length > 0 && tabs[0].windowId) {
+      await updateManifestCountBadge(tabs[0].windowId);
+    } else {
+      // Fallback to current window
+      await updateManifestCountBadge(null);
+    }
+  } catch (error) {
+    // Silently fail - badge update is not critical
+    logger.error('Error updating badge on window change:', error);
+  }
+}
+
+// Listen for tab activation (when user switches tabs)
+chrome.tabs.onActivated.addListener(async () => {
+  await updateBadgeOnWindowChange();
+});
+
+// Listen for window focus changes (when user switches windows)
+chrome.windows.onFocusChanged.addListener(async (windowId: number) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+    await updateManifestCountBadge(windowId);
+  }
+});
+
+/**
  * Message handler for communication with popup and content scripts.
  * Routes messages to appropriate handler functions.
  */
@@ -715,7 +920,7 @@ chrome.runtime.onMessage.addListener((
 
   switch (message.action) {
     case 'getStatus':
-      handleGetStatus(sendResponse);
+      handleGetStatus(message as GetStatusMessage, sendResponse);
       return true; // Indicate we will send a response
 
     case 'getManifestData':
@@ -748,15 +953,24 @@ chrome.runtime.onMessage.addListener((
       return false; // No response needed
 
     case 'getIgnoreList':
-      handleGetIgnoreList(sendResponse);
+      handleGetIgnoreList(sendResponse).catch((error) => {
+        logger.error('Error in handleGetIgnoreList:', error);
+        sendResponse({ error: error instanceof Error ? error.message : 'Unknown error' });
+      });
       return true;
 
     case 'addToIgnoreList':
-      handleAddToIgnoreList(message as AddToIgnoreListMessage, sendResponse);
+      handleAddToIgnoreList(message as AddToIgnoreListMessage, sendResponse).catch((error) => {
+        logger.error('Error in handleAddToIgnoreList:', error);
+        sendResponse({ error: error instanceof Error ? error.message : 'Unknown error' });
+      });
       return true;
 
     case 'removeFromIgnoreList':
-      handleRemoveFromIgnoreList(message as RemoveFromIgnoreListMessage, sendResponse);
+      handleRemoveFromIgnoreList(message as RemoveFromIgnoreListMessage, sendResponse).catch((error) => {
+        logger.error('Error in handleRemoveFromIgnoreList:', error);
+        sendResponse({ error: error instanceof Error ? error.message : 'Unknown error' });
+      });
       return true;
 
     case 'getCurrentTab':
@@ -774,10 +988,23 @@ chrome.runtime.onMessage.addListener((
  * Updates manifest and notifies popup incrementally.
  * @param message - PreviewFrameReadyMessage containing frame data
  */
-function handlePreviewFrameReady(message: PreviewFrameReadyMessage): void {
+async function handlePreviewFrameReady(message: PreviewFrameReadyMessage): Promise<void> {
   const { manifestId, frameUrl, frameIndex } = message;
 
-  const manifest = manifestHistory.find((m) => m.id === manifestId);
+  // Try to find the manifest in any window's storage
+  // We'll search all windows by trying common window IDs, but this is a limitation
+  // For now, we'll use a default key if we can't determine the window
+  const currentWindowId = await getCurrentWindowId();
+  let manifestHistory = await loadManifestHistory(currentWindowId);
+  let manifest = manifestHistory.find((m) => m.id === manifestId);
+  let windowId = currentWindowId;
+
+  // If not found, try default storage (for backward compatibility)
+  if (!manifest) {
+    manifestHistory = await loadManifestHistory(null);
+    manifest = manifestHistory.find((m) => m.id === manifestId);
+    windowId = null;
+  }
   if (!manifest) {
     logger.log(` Manifest ${manifestId} not found when handling preview frame ${frameIndex}`);
     return;
@@ -793,6 +1020,9 @@ function handlePreviewFrameReady(message: PreviewFrameReadyMessage): void {
 
   // Get all frames collected so far (remove any undefined gaps)
   const collectedFrames = manifest.previewUrls.filter((url): url is string => url !== undefined);
+
+  // Save updated manifest history
+  await saveManifestHistory(manifestHistory, windowId);
 
   // Send incremental update to popup with all frames collected so far
   chrome.runtime.sendMessage({
@@ -1149,7 +1379,11 @@ async function handleRequestCompleted(details: chrome.webRequest.WebRequestBodyD
     return; // Silently skip - already processed recently
   }
 
-  // Check if we already have this exact manifest in history
+  // Get window ID for this request and load manifest history
+  const windowId = details.tabId && details.tabId > 0
+    ? await getTabWindowId(details.tabId)
+    : null;
+  const manifestHistory = await loadManifestHistory(windowId);
   const existingManifest = manifestHistory.find((m) => {
     const existingUrlWithoutQuery = m.m3u8Url.split('?')[0];
     return existingUrlWithoutQuery === urlWithoutQuery;
@@ -1290,10 +1524,27 @@ async function startDownload(manifestId: string, format: DownloadFormat): Promis
   const downloadId = Date.now().toString(36) + Math.random().toString(36).slice(2);
   const abortController = new AbortController();
 
-  // Find the manifest
-  const manifest = manifestHistory.find((m) => m.id === manifestId);
+  // Find the manifest - check active tab's window storage first
+  let currentWindowId: number | null = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs.length > 0 && tabs[0].windowId) {
+      currentWindowId = tabs[0].windowId;
+    }
+  } catch (error) {
+    currentWindowId = await getCurrentWindowId();
+  }
+
+  let manifestHistory = await loadManifestHistory(currentWindowId);
+  let manifest = manifestHistory.find((m) => m.id === manifestId);
+
+  // If not found, try default storage (for backward compatibility)
   if (!manifest) {
-    notifyDownloadError(downloadId, 'Manifest not found');
+    manifestHistory = await loadManifestHistory(null);
+    manifest = manifestHistory.find((m) => m.id === manifestId);
+  }
+  if (!manifest) {
+    await notifyDownloadError(downloadId, 'Manifest not found');
     return;
   }
 
@@ -1303,21 +1554,22 @@ async function startDownload(manifestId: string, format: DownloadFormat): Promis
     format,
     cancelled: false,
     abortController,
-    progress: { downloaded: 0, total: 0, status: 'starting' }
+    progress: { downloaded: 0, total: 0, status: 'starting' },
+    windowId: currentWindowId
   });
 
   try {
     if (format === 'zip') {
       await downloadAsZip(downloadId, manifest, abortController.signal);
     } else {
-      notifyDownloadError(downloadId, `Unsupported download format: ${format}`);
+      await notifyDownloadError(downloadId, `Unsupported download format: ${format}`);
       activeDownloads.delete(downloadId);
       return;
     }
   } catch (error) {
     if (!abortController.signal.aborted) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      notifyDownloadError(downloadId, errorMessage);
+      await notifyDownloadError(downloadId, errorMessage);
     }
     activeDownloads.delete(downloadId);
   }
@@ -1328,20 +1580,20 @@ async function startDownload(manifestId: string, format: DownloadFormat): Promis
  * Marks download as cancelled, aborts fetch requests, and removes from active downloads.
  * @param downloadId - The ID of the download to cancel
  */
-function cancelDownload(downloadId: string): void {
+async function cancelDownload(downloadId: string): Promise<void> {
   const download = activeDownloads.get(downloadId);
   if (download) {
     download.cancelled = true;
     download.abortController.abort();
-    notifyDownloadProgress(downloadId, {
+    await notifyDownloadProgress(downloadId, {
       downloaded: download.progress.downloaded,
       total: download.progress.total,
       status: 'cancelled'
     });
     activeDownloads.delete(downloadId);
-    // Clear badge if no active downloads remain
+    // Restore manifest count badge if no active downloads remain
     if (activeDownloads.size === 0) {
-      chrome.action.setBadgeText({ text: '' });
+      await updateManifestCountBadge();
     }
   }
 }
@@ -1384,6 +1636,10 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   if (typeof JSZip === 'undefined') {
     throw new Error('JSZip library not loaded');
   }
+
+  // Get windowId from the download
+  const download = activeDownloads.get(downloadId);
+  const windowId = download?.windowId ?? null;
 
   const zip = new JSZip();
 
@@ -1479,7 +1735,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   const failedSegments: string[] = [];
 
   // Update initial progress
-  notifyDownloadProgress(downloadId, {
+  await notifyDownloadProgress(downloadId, {
     downloaded: 0,
     total,
     status: 'downloading',
@@ -1547,7 +1803,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        notifyDownloadProgress(downloadId, {
+        await notifyDownloadProgress(downloadId, {
           downloaded,
           total,
           status: 'downloading',
@@ -1631,7 +1887,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        notifyDownloadProgress(downloadId, {
+        await notifyDownloadProgress(downloadId, {
           downloaded,
           total,
           status: 'downloading',
@@ -1710,7 +1966,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        notifyDownloadProgress(downloadId, {
+        await notifyDownloadProgress(downloadId, {
           downloaded,
           total,
           status: 'downloading',
@@ -1797,7 +2053,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        notifyDownloadProgress(downloadId, {
+        await notifyDownloadProgress(downloadId, {
           downloaded,
           total,
           status: 'downloading',
@@ -1849,7 +2105,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   }
 
   // Generate zip file - notify user that ZIP creation is starting
-  notifyDownloadProgress(downloadId, {
+  await notifyDownloadProgress(downloadId, {
     downloaded,
     total,
     status: 'creating_zip',
@@ -1878,7 +2134,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   }
 
   // Update progress with ZIP size - ZIP generation is complete, show success color
-  notifyDownloadProgress(downloadId, {
+  await notifyDownloadProgress(downloadId, {
     downloaded,
     total,
     status: 'creating_zip',
@@ -1970,7 +2226,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
               downloadSpeed: 0,
               zipSize
             };
-            notifyDownloadProgress(downloadId, sendingProgress, true);
+            await notifyDownloadProgress(downloadId, sendingProgress, true);
           }
         }
 
@@ -1997,7 +2253,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           logger.log(` Download triggered via anchor element in content script`);
 
           // Update progress to complete
-          notifyDownloadProgress(downloadId, {
+          await notifyDownloadProgress(downloadId, {
             downloaded,
             total,
             status: 'complete',
@@ -2007,21 +2263,23 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             zipSize
           });
           // Clean up after a short delay
-          setTimeout(() => {
+          setTimeout(async () => {
             activeDownloads.delete(downloadId);
-            // Clear badge if no active downloads remain
-            if (activeDownloads.size === 0) {
-              chrome.action.setBadgeText({ text: '' });
+            // Restore manifest count badge if no active downloads remain
+            if (activeDownloads.size === 0 && windowId !== null) {
+              await updateManifestCountBadge(windowId);
             }
           }, 2000);
 
           // Request content script to clean up chunks
-          chrome.tabs.sendMessage(tabId, {
-            action: 'cleanupZipChunks',
-            totalChunks: totalChunks
-          }).catch(() => {
+          try {
+            await chrome.tabs.sendMessage(tabId, {
+              action: 'cleanupZipChunks',
+              totalChunks: totalChunks
+            });
+          } catch {
             // Ignore errors during cleanup
-          });
+          }
           return;
         }
 
@@ -2033,47 +2291,48 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         logger.log(` Received data URL from content script (${(dataUrl.length / 1024 / 1024).toFixed(2)} MB)`);
 
         // Use the data URL for download (background script has access to chrome.downloads)
-        // Clear badge when download starts
-        chrome.action.setBadgeText({ text: '' });
+        // Badge is already updated by notifyDownloadProgress, no need to clear here
 
-        chrome.downloads.download({
-          url: dataUrl,
-          filename: zipFileName,
-          saveAs: true
-        }, (_chromeDownloadId?: number) => {
-          // Request content script to clean up chunks after download starts
-          chrome.tabs.sendMessage(tabId, {
-            action: 'cleanupZipChunks',
-            totalChunks: totalChunks
-          }).catch(() => {
-            // Ignore errors during cleanup
+        try {
+          await chrome.downloads.download({
+            url: dataUrl,
+            filename: zipFileName,
+            saveAs: true
           });
 
-          if (chrome.runtime.lastError) {
-            const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-            logger.error(` Error downloading ZIP: ${errorMessage}`);
-            notifyDownloadError(downloadId, errorMessage);
-            activeDownloads.delete(downloadId);
-          } else {
-            notifyDownloadProgress(downloadId, {
-              downloaded,
-              total,
-              status: 'complete',
-              downloadedBytes,
-              totalBytes,
-              downloadSpeed: 0,
-              zipSize
+          // Request content script to clean up chunks after download starts
+          try {
+            await chrome.tabs.sendMessage(tabId, {
+              action: 'cleanupZipChunks',
+              totalChunks: totalChunks
             });
-            // Clean up after a short delay
-            setTimeout(() => {
-              activeDownloads.delete(downloadId);
-              // Clear badge if no active downloads remain
-              if (activeDownloads.size === 0) {
-                chrome.action.setBadgeText({ text: '' });
-              }
-            }, 2000);
+          } catch {
+            // Ignore errors during cleanup
           }
-        });
+
+          await notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'complete',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed: 0,
+            zipSize
+          });
+          // Clean up after a short delay
+          setTimeout(async () => {
+            activeDownloads.delete(downloadId);
+            // Restore manifest count badge if no active downloads remain
+            if (activeDownloads.size === 0 && windowId !== null) {
+              await updateManifestCountBadge(windowId);
+            }
+          }, 2000);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logger.error(` Error downloading ZIP: ${errorMessage}`);
+          await notifyDownloadError(downloadId, errorMessage);
+          activeDownloads.delete(downloadId);
+        }
       } else {
         // File is small enough for sendMessage
         logger.log(` Sending ${(zipArrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB ArrayBuffer to content script...`);
@@ -2091,39 +2350,38 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         logger.log(` Created Blob URL: ${blobUrl.substring(0, 100)}...`);
 
         // Use the Blob URL for download
-        // Clear badge when download starts
-        chrome.action.setBadgeText({ text: '' });
+        // Badge is already updated by notifyDownloadProgress, no need to clear here
 
-        chrome.downloads.download({
-          url: blobUrl,
-          filename: zipFileName,
-          saveAs: true
-        }, (_chromeDownloadId?: number) => {
-          if (chrome.runtime.lastError) {
-            const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-            logger.error(` Error downloading ZIP: ${errorMessage}`);
-            notifyDownloadError(downloadId, errorMessage);
+        try {
+          await chrome.downloads.download({
+            url: blobUrl,
+            filename: zipFileName,
+            saveAs: true
+          });
+
+          await notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'complete',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed: 0,
+            zipSize
+          });
+          // Clean up after a short delay
+          setTimeout(async () => {
             activeDownloads.delete(downloadId);
-          } else {
-            notifyDownloadProgress(downloadId, {
-              downloaded,
-              total,
-              status: 'complete',
-              downloadedBytes,
-              totalBytes,
-              downloadSpeed: 0,
-              zipSize
-            });
-            // Clean up after a short delay
-            setTimeout(() => {
-              activeDownloads.delete(downloadId);
-              // Clear badge if no active downloads remain
-              if (activeDownloads.size === 0) {
-                chrome.action.setBadgeText({ text: '' });
-              }
-            }, 2000);
-          }
-        });
+            // Restore manifest count badge if no active downloads remain
+            if (activeDownloads.size === 0 && windowId !== null) {
+              await updateManifestCountBadge(windowId);
+            }
+          }, 2000);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logger.error(` Error downloading ZIP: ${errorMessage}`);
+          await notifyDownloadError(downloadId, errorMessage);
+          activeDownloads.delete(downloadId);
+        }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2156,7 +2414,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         // Update progress periodically during base64 conversion (every 10% or every 100 chunks)
         // Keep the zipSize and totalBytes in the progress during conversion
         if (processedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0 || processedChunks === totalChunks) {
-          notifyDownloadProgress(downloadId, {
+          await notifyDownloadProgress(downloadId, {
             downloaded,
             total,
             status: 'creating_zip',
@@ -2176,39 +2434,38 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       logger.log(` Data URL created: ${dataUrl.length} characters`);
 
       // Create download using chrome.downloads API
-      // Clear badge when download starts
-      chrome.action.setBadgeText({ text: '' });
+      // Badge is already updated by notifyDownloadProgress, no need to clear here
 
-      chrome.downloads.download({
-        url: dataUrl,
-        filename: zipFileName,
-        saveAs: true
-      }, (_chromeDownloadId?: number) => {
-        if (chrome.runtime.lastError) {
-          const errorMessage = chrome.runtime.lastError.message || 'Unknown error';
-          logger.error(` Error downloading ZIP: ${errorMessage}`);
-          notifyDownloadError(downloadId, errorMessage);
+      try {
+        await chrome.downloads.download({
+          url: dataUrl,
+          filename: zipFileName,
+          saveAs: true
+        });
+
+        await notifyDownloadProgress(downloadId, {
+          downloaded,
+          total,
+          status: 'complete',
+          downloadedBytes,
+          totalBytes,
+          downloadSpeed: 0,
+          zipSize
+        });
+        // Clean up after a short delay
+        setTimeout(async () => {
           activeDownloads.delete(downloadId);
-        } else {
-          notifyDownloadProgress(downloadId, {
-            downloaded,
-            total,
-            status: 'complete',
-            downloadedBytes,
-            totalBytes,
-            downloadSpeed: 0,
-            zipSize
-          });
-          // Clean up after a short delay
-          setTimeout(() => {
-            activeDownloads.delete(downloadId);
-            // Clear badge if no active downloads remain
-            if (activeDownloads.size === 0) {
-              chrome.action.setBadgeText({ text: '' });
-            }
-          }, 2000);
-        }
-      });
+          // Clear badge if no active downloads remain
+          if (activeDownloads.size === 0) {
+            await chrome.action.setBadgeText({ text: '' });
+          }
+        }, 2000);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.error(` Error downloading ZIP: ${errorMessage}`);
+        await notifyDownloadError(downloadId, errorMessage);
+        activeDownloads.delete(downloadId);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error(` Error during base64 conversion: ${errorMessage}`);
@@ -2298,38 +2555,168 @@ function modifyM3U8ForLocalFiles(content: string, baseUrl: string, urlToFilename
 }
 
 /**
+ * Updates the badge to show the manifest count.
+ * Only updates if there are no active downloads.
+ * @param windowId - The window ID to get manifests for (null for active window)
+ */
+async function updateManifestCountBadge(windowId: number | null = null): Promise<void> {
+  // Only show manifest count if there are no active downloads
+  if (activeDownloads.size > 0) {
+    return;
+  }
+
+  try {
+    // Get the window ID if not provided - use the active tab's window (more reliable for popups)
+    if (windowId === null) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tabs.length > 0 && tabs[0].windowId) {
+          windowId = tabs[0].windowId;
+        }
+      } catch (error) {
+        // Ignore error, will try getCurrentWindowId below
+      }
+
+      // If still null, try getCurrentWindowId
+      if (windowId === null) {
+        windowId = await getCurrentWindowId();
+      }
+    }
+
+    // Get ignored domains
+    const result = await chrome.storage.local.get(IGNORE_LIST_STORAGE_KEY);
+    const ignoredDomains: string[] = result[IGNORE_LIST_STORAGE_KEY] || [];
+
+    // Load manifests for this window
+    const manifestHistory = await loadManifestHistory(windowId);
+
+    // Filter out manifests with no segments and ignored domains
+    const visibleManifests = manifestHistory.filter((m) => {
+      if (m.expectedSegments.length === 0) {
+        return false;
+      }
+      if (m.pageDomain && ignoredDomains.includes(m.pageDomain)) {
+        return false;
+      }
+      return true;
+    });
+
+    // Deduplicate by dedupKey (same logic as handleGetStatus)
+    const dedupMap = new Map<string, Manifest>();
+    for (const m of visibleManifests) {
+      const urlKey = m.m3u8Url.split('?')[0];
+      const dedupKey = m.title && m.expectedSegments.length > 0
+        ? `${m.title}|${m.expectedSegments.length}`
+        : urlKey;
+
+      const existing = dedupMap.get(dedupKey);
+      if (!existing || new Date(m.capturedAt) > new Date(existing.capturedAt)) {
+        dedupMap.set(dedupKey, m);
+      }
+    }
+
+    const count = dedupMap.size;
+
+    // If windowId is null, try to get it one more time
+    if (windowId === null) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tabs.length > 0 && tabs[0].windowId) {
+          windowId = tabs[0].windowId;
+        }
+      } catch {
+        // Ignore errors
+      }
+
+      // Last resort: try getCurrentWindowId
+      if (windowId === null) {
+        windowId = await getCurrentWindowId();
+      }
+    }
+
+    // Get the active tab ID to set badge per-tab
+    let tabId: number | undefined = undefined;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs.length > 0 && tabs[0].id) {
+        tabId = tabs[0].id;
+      }
+    } catch {
+      // If we can't get tabId, badge will be global
+    }
+
+    // Update badge with the count for the active tab
+    if (count > 0) {
+      // Show manifest count with a different color (purple)
+      if (tabId !== undefined) {
+        await chrome.action.setBadgeText({ text: String(count), tabId: tabId });
+        await chrome.action.setBadgeBackgroundColor({ color: '#9c27b0', tabId: tabId }); // Purple for manifest count
+      } else {
+        await chrome.action.setBadgeText({ text: String(count) });
+        await chrome.action.setBadgeBackgroundColor({ color: '#9c27b0' }); // Purple for manifest count
+      }
+    } else {
+      // Clear badge if no manifests
+      if (tabId !== undefined) {
+        await chrome.action.setBadgeText({ text: '', tabId: tabId });
+      } else {
+        await chrome.action.setBadgeText({ text: '' });
+      }
+    }
+  } catch (error) {
+    // Silently fail - badge update is not critical
+    logger.error('Error updating manifest count badge:', error);
+  }
+}
+
+/**
  * Updates the extension badge to show download progress.
  * @param progress - Progress information object
  * @param zipGenerated - Whether ZIP generation has completed (for success color)
  * @param hasError - Whether there was an error (for error color)
  */
-function updateBadge(progress: DownloadProgress, zipGenerated: boolean = false, hasError: boolean = false): void {
+async function updateBadge(progress: DownloadProgress, zipGenerated: boolean = false, hasError: boolean = false, tabId?: number): Promise<void> {
+  // Get active tab ID if not provided
+  let activeTabId: number | undefined = tabId;
+  if (activeTabId === undefined) {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs.length > 0 && tabs[0].id) {
+        activeTabId = tabs[0].id;
+      }
+    } catch {
+      // If we can't get tabId, badge will be global
+    }
+  }
+
+  const badgeOptions = activeTabId !== undefined ? { tabId: activeTabId } : {};
+
   if (progress.status === 'complete' || progress.status === 'cancelled') {
     // Clear badge when download is complete or cancelled
-    chrome.action.setBadgeText({ text: '' });
+    await chrome.action.setBadgeText({ text: '', ...badgeOptions });
   } else if (hasError) {
     // Show error indicator
-    chrome.action.setBadgeText({ text: 'ERR' });
-    chrome.action.setBadgeBackgroundColor({ color: '#f44336' }); // Red for errors
+    await chrome.action.setBadgeText({ text: 'ERR', ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: '#f44336', ...badgeOptions }); // Red for errors
   } else if (progress.status === 'creating_zip') {
     if (zipGenerated && progress.zipSize) {
       // ZIP generation completed successfully - show success color
-      chrome.action.setBadgeText({ text: 'ZIP' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4caf50' }); // Green for success
+      await chrome.action.setBadgeText({ text: 'ZIP', ...badgeOptions });
+      await chrome.action.setBadgeBackgroundColor({ color: '#4caf50', ...badgeOptions }); // Green for success
     } else {
       // Still creating ZIP - show orange
-      chrome.action.setBadgeText({ text: 'ZIP' });
-      chrome.action.setBadgeBackgroundColor({ color: '#ff9800' }); // Orange for zipping
+      await chrome.action.setBadgeText({ text: 'ZIP', ...badgeOptions });
+      await chrome.action.setBadgeBackgroundColor({ color: '#ff9800', ...badgeOptions }); // Orange for zipping
     }
   } else if (progress.status === 'downloading') {
     // Show percentage on badge during segment download
     const percent = Math.round((progress.downloaded / progress.total) * 100);
-    chrome.action.setBadgeText({ text: `${percent}%` });
-    chrome.action.setBadgeBackgroundColor({ color: '#4caf50' }); // Green for downloading
+    await chrome.action.setBadgeText({ text: `${percent}%`, ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: '#4caf50', ...badgeOptions }); // Green for downloading
   } else {
     // Default: show status text
-    chrome.action.setBadgeText({ text: progress.status.substring(0, 4).toUpperCase() });
-    chrome.action.setBadgeBackgroundColor({ color: '#2196f3' }); // Blue for other statuses
+    await chrome.action.setBadgeText({ text: progress.status.substring(0, 4).toUpperCase(), ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: '#2196f3', ...badgeOptions }); // Blue for other statuses
   }
 }
 
@@ -2339,9 +2726,18 @@ function updateBadge(progress: DownloadProgress, zipGenerated: boolean = false, 
  * @param progress - Progress information object
  * @param zipGenerated - Whether ZIP generation has completed (for success color)
  */
-function notifyDownloadProgress(downloadId: string, progress: DownloadProgress, zipGenerated: boolean = false): void {
-  // Update extension badge
-  updateBadge(progress, zipGenerated, false);
+async function notifyDownloadProgress(downloadId: string, progress: DownloadProgress, zipGenerated: boolean = false): Promise<void> {
+  // Get tabId from the download's manifest
+  const download = activeDownloads.get(downloadId);
+  const tabId = download ? await getTabIdFromManifest(download.manifestId) : undefined;
+
+  // Update extension badge for this tab
+  await updateBadge(progress, zipGenerated, false, tabId);
+
+  // If download is complete or cancelled, restore manifest count badge
+  if (progress.status === 'complete' || progress.status === 'cancelled') {
+    await updateManifestCountBadge();
+  }
 
   // Send message to popup
   chrome.runtime.sendMessage({
@@ -2358,15 +2754,31 @@ function notifyDownloadProgress(downloadId: string, progress: DownloadProgress, 
  * @param downloadId - The ID of the download that failed
  * @param error - Error message describing what went wrong
  */
-function notifyDownloadError(downloadId: string, error: string): void {
+async function notifyDownloadError(downloadId: string, error: string): Promise<void> {
   // Show error badge
   const download = activeDownloads.get(downloadId);
   if (download) {
-    updateBadge(download.progress, false, true);
+    const tabId = await getTabIdFromManifest(download.manifestId);
+    await updateBadge(download.progress, false, true, tabId);
   } else {
-    // No download state, show generic error badge
-    chrome.action.setBadgeText({ text: 'ERR' });
-    chrome.action.setBadgeBackgroundColor({ color: '#f44336' }); // Red for errors
+    // No download state, try to get active tab ID
+    let tabId: number | undefined = undefined;
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (tabs.length > 0 && tabs[0].id) {
+        tabId = tabs[0].id;
+      }
+    } catch {
+      // Ignore errors
+    }
+    const badgeOptions = tabId !== undefined ? { tabId: tabId } : {};
+    await chrome.action.setBadgeText({ text: 'ERR', ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: '#f44336', ...badgeOptions }); // Red for errors
+  }
+
+  // If no active downloads remain, restore manifest count badge
+  if (activeDownloads.size === 0) {
+    await updateManifestCountBadge();
   }
 
   // Send message to popup

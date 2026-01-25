@@ -50,6 +50,7 @@ export interface ManifestSummary {
   resolution?: VideoResolution; // Video resolution (width x height)
   duration?: number; // Video duration in seconds
   pageUrl?: string; // Full URL of the page where the manifest was captured
+  pageDomain?: string; // Domain of the page where the manifest was captured (for grouping and ignore list)
   previewUrls?: string[]; // Array of data URLs of video frame previews (base64 images) captured at different timestamps
 }
 
@@ -85,6 +86,7 @@ export interface ActiveDownload {
   cancelled: boolean;
   abortController: AbortController;
   progress: DownloadProgress;
+  windowId: number | null; // Window ID where the download was initiated
 }
 
 /**
@@ -114,7 +116,8 @@ export type MessageAction =
   | 'createBlobUrl'
   | 'receiveZipChunk'
   | 'createBlobUrlFromChunks'
-  | 'cleanupZipChunks';
+  | 'cleanupZipChunks'
+  | 'createBlobUrlFromStorage'; // Legacy message, kept for compatibility
 
 /**
  * Base message interface
@@ -128,6 +131,7 @@ export interface BaseMessage {
  */
 export interface GetStatusMessage extends BaseMessage {
   action: 'getStatus';
+  windowId?: number; // Optional window ID to filter manifests by window
 }
 
 /**
@@ -322,6 +326,15 @@ export interface CleanupZipChunksMessage extends BaseMessage {
 }
 
 /**
+ * Create blob URL from storage message (content script, legacy)
+ * This is a legacy message kept for backward compatibility
+ */
+export interface CreateBlobUrlFromStorageMessage extends BaseMessage {
+  action: 'createBlobUrlFromStorage';
+  storageKey: string;
+}
+
+/**
  * Content script response types
  */
 export interface GetVideoTitleResponse {
@@ -391,7 +404,8 @@ export type ExtensionMessage =
   | CreateBlobUrlMessage
   | ReceiveZipChunkMessage
   | CreateBlobUrlFromChunksMessage
-  | CleanupZipChunksMessage;
+  | CleanupZipChunksMessage
+  | CreateBlobUrlFromStorageMessage;
 
 /**
  * Response for getStatus action

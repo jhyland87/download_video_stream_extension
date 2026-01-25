@@ -1,39 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { Manifest, DownloadFormat, ManifestSummary } from '../types/index.js';
+import type {
+  Manifest,
+  DownloadFormat,
+  ManifestSummary,
+  GetStatusResponse,
+  GetManifestDataResponse,
+  GetDownloadStatusResponse,
+  ExtensionResponse,
+  ActiveDownload,
+  DownloadProgress
+} from '../types/index.js';
+import { setupChromeMock, setupJSZipMock, clearChromeStorage } from '../__mocks__/index.js';
 
 /**
  * Unit tests for background script functions
  * Note: These test the core logic, not Chrome APIs
  */
 
-// Mock Chrome APIs
-global.chrome = {
-  runtime: {
-    sendMessage: vi.fn(),
-    onMessage: {
-      addListener: vi.fn()
-    },
-    lastError: undefined
-  },
-  webRequest: {
-    onCompleted: {
-      addListener: vi.fn()
-    }
-  },
-  downloads: {
-    download: vi.fn()
-  }
-} as unknown as typeof chrome;
-
-// Mock JSZip
-global.JSZip = class {
-  file(): this {
-    return this;
-  }
-  async generateAsync(): Promise<ArrayBuffer> {
-    return new ArrayBuffer(0);
-  }
-} as unknown as typeof JSZip;
+// Setup mocks
+setupChromeMock();
+setupJSZipMock();
 
 /**
  * Testable version of generateManifestId
@@ -512,7 +498,7 @@ function testableHandleSegmentDownloaded(
  * Testable version of handleGetDownloadStatus
  */
 function testableHandleGetDownloadStatus(
-  activeDownloads: Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>,
+  activeDownloads: Map<string, ActiveDownload>,
   sendResponse: (response: unknown) => void
 ): void {
   const statuses = Array.from(activeDownloads.entries()).map(([id, download]) => ({
@@ -551,7 +537,7 @@ describe('handleGetStatus', () => {
     });
 
     expect(response).toBeDefined();
-    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    const getStatusResponse = response as GetStatusResponse;
     expect(getStatusResponse.manifestHistory).toHaveLength(1);
     expect(getStatusResponse.manifestHistory[0].id).toBe('1');
   });
@@ -587,7 +573,7 @@ describe('handleGetStatus', () => {
       response = res;
     });
 
-    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    const getStatusResponse = response as GetStatusResponse;
     expect(getStatusResponse.manifestHistory).toHaveLength(1);
     expect(getStatusResponse.manifestHistory[0].id).toBe('2');
     expect(getStatusResponse.manifestHistory[0].capturedAt).toBe(later.toISOString());
@@ -627,7 +613,7 @@ describe('handleGetStatus', () => {
       response = res;
     });
 
-    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    const getStatusResponse = response as GetStatusResponse;
     expect(getStatusResponse.manifestHistory).toHaveLength(3);
     expect(getStatusResponse.manifestHistory[0].id).toBe('2');
     expect(getStatusResponse.manifestHistory[1].id).toBe('1');
@@ -653,7 +639,7 @@ describe('handleGetStatus', () => {
       response = res;
     });
 
-    const getStatusResponse = response as { manifestHistory: ManifestSummary[] };
+    const getStatusResponse = response as GetStatusResponse;
     expect(getStatusResponse.manifestHistory[0].resolution).toEqual({ width: 1920, height: 1080 });
     expect(getStatusResponse.manifestHistory[0].duration).toBe(120.5);
   });
@@ -678,7 +664,7 @@ describe('handleGetManifestData', () => {
     });
 
     expect(response).toBeDefined();
-    const manifestData = response as { id: string; m3u8Url: string; expectedSegments: string[] };
+    const manifestData = response as GetManifestDataResponse;
     expect(manifestData.id).toBe('1');
     expect(manifestData.m3u8Url).toBe('https://example.com/video.m3u8');
     expect(manifestData.expectedSegments).toEqual(['seg1.ts', 'seg2.ts']);
@@ -693,7 +679,7 @@ describe('handleGetManifestData', () => {
     });
 
     expect(response).toBeDefined();
-    const errorResponse = response as { error: string };
+    const errorResponse = response as { error: string }; // Part of ExtensionResponse union
     expect(errorResponse.error).toBe('Manifest not found');
   });
 });
@@ -773,16 +759,22 @@ describe('handleSegmentDownloaded', () => {
 
 describe('handleGetDownloadStatus', () => {
   it('should return status of all active downloads', () => {
-    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>();
+    const activeDownloads = new Map<string, ActiveDownload>();
     activeDownloads.set('download1', {
       manifestId: 'manifest1',
       format: 'zip',
-      progress: { downloaded: 5, total: 10, status: 'downloading' }
+      cancelled: false,
+      abortController: new AbortController(),
+      progress: { downloaded: 5, total: 10, status: 'downloading' } as DownloadProgress,
+      windowId: null
     });
     activeDownloads.set('download2', {
       manifestId: 'manifest2',
       format: 'zip',
-      progress: { downloaded: 0, total: 5, status: 'starting' }
+      cancelled: false,
+      abortController: new AbortController(),
+      progress: { downloaded: 0, total: 5, status: 'starting' } as DownloadProgress,
+      windowId: null
     });
 
     let response: unknown;
@@ -791,7 +783,7 @@ describe('handleGetDownloadStatus', () => {
     });
 
     expect(response).toBeDefined();
-    const statusResponse = response as { downloads: Array<{ downloadId: string; manifestId: string; format: string; progress: { downloaded: number; total: number; status: string } }> };
+    const statusResponse = response as GetDownloadStatusResponse;
     expect(statusResponse.downloads).toHaveLength(2);
     expect(statusResponse.downloads[0].downloadId).toBe('download1');
     expect(statusResponse.downloads[0].progress.downloaded).toBe(5);
@@ -799,7 +791,7 @@ describe('handleGetDownloadStatus', () => {
   });
 
   it('should return empty array when no active downloads', () => {
-    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>();
+    const activeDownloads = new Map<string, ActiveDownload>();
 
     let response: unknown;
     testableHandleGetDownloadStatus(activeDownloads, (res) => {
@@ -807,24 +799,345 @@ describe('handleGetDownloadStatus', () => {
     });
 
     expect(response).toBeDefined();
-    const statusResponse = response as { downloads: unknown[] };
+    const statusResponse = response as GetDownloadStatusResponse;
     expect(statusResponse.downloads).toHaveLength(0);
   });
 
   it('should use default progress when progress is missing', () => {
-    const activeDownloads = new Map<string, { manifestId: string; format: DownloadFormat; progress?: { downloaded: number; total: number; status: string } }>();
+    const activeDownloads = new Map<string, ActiveDownload>();
     activeDownloads.set('download1', {
       manifestId: 'manifest1',
-      format: 'zip'
+      format: 'zip',
+      cancelled: false,
+      abortController: new AbortController(),
+      progress: { downloaded: 0, total: 0, status: 'starting' } as DownloadProgress,
+      windowId: null
     });
 
     let response: unknown;
-    testableHandleGetDownloadStatus(activeDownloads as Map<string, { manifestId: string; format: DownloadFormat; progress: { downloaded: number; total: number; status: string } }>, (res) => {
+    testableHandleGetDownloadStatus(activeDownloads, (res) => {
       response = res;
     });
 
     expect(response).toBeDefined();
-    const statusResponse = response as { downloads: Array<{ progress: { downloaded: number; total: number; status: string } }> };
+    const statusResponse = response as GetDownloadStatusResponse;
     expect(statusResponse.downloads[0].progress).toEqual({ downloaded: 0, total: 0, status: 'starting' });
+  });
+});
+
+/**
+ * Testable version of getStorageKey
+ */
+function getStorageKey(windowId: number | null): string {
+  const MANIFEST_HISTORY_STORAGE_KEY_PREFIX = 'manifestHistory_';
+  return windowId !== null
+    ? `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}${windowId}`
+    : `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}default`;
+}
+
+/**
+ * Testable version of loadManifestHistory
+ */
+async function loadManifestHistory(windowId: number | null): Promise<Manifest[]> {
+  const storageKey = getStorageKey(windowId);
+  const result = await chrome.storage.session.get(storageKey);
+  return (result[storageKey] as Manifest[]) || [];
+}
+
+/**
+ * Testable version of saveManifestHistory
+ */
+async function saveManifestHistory(manifests: Manifest[], windowId: number | null): Promise<void> {
+  const storageKey = getStorageKey(windowId);
+  await chrome.storage.session.set({ [storageKey]: manifests });
+}
+
+/**
+ * Testable version of getCurrentWindowId
+ */
+async function getCurrentWindowId(): Promise<number | null> {
+  try {
+    const currentWindow = await chrome.windows.getCurrent();
+    return currentWindow.id ?? null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Testable version of getTabIdFromManifest
+ */
+async function getTabIdFromManifest(manifestId: string): Promise<number | undefined> {
+  try {
+    // Try to find the manifest in the current window's storage
+    const currentWindowId = await getCurrentWindowId();
+    let manifestHistory = await loadManifestHistory(currentWindowId);
+    let manifest = manifestHistory.find((m) => m.id === manifestId);
+
+    // If not found, try default storage (for backward compatibility)
+    if (!manifest) {
+      manifestHistory = await loadManifestHistory(null);
+      manifest = manifestHistory.find((m) => m.id === manifestId);
+    }
+
+    return manifest?.tabId;
+  } catch {
+    return undefined;
+  }
+}
+
+describe('getStorageKey', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should return key with window ID when windowId is provided', () => {
+    const key = getStorageKey(123);
+    expect(key).toBe('manifestHistory_123');
+  });
+
+  it('should return default key when windowId is null', () => {
+    const key = getStorageKey(null);
+    expect(key).toBe('manifestHistory_default');
+  });
+
+  it('should handle different window IDs', () => {
+    const key1 = getStorageKey(1);
+    const key2 = getStorageKey(2);
+    expect(key1).toBe('manifestHistory_1');
+    expect(key2).toBe('manifestHistory_2');
+    expect(key1).not.toBe(key2);
+  });
+});
+
+describe('loadManifestHistory', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Clear mock storage
+    clearChromeStorage();
+  });
+
+  it('should load manifests from storage for a specific window', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U\n#EXTINF:10,\nsegment1.ts',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['segment1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+    await saveManifestHistory(manifests, 1);
+
+    const loaded = await loadManifestHistory(1);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('1');
+  });
+
+  it('should return empty array when no manifests exist', async () => {
+    const loaded = await loadManifestHistory(1);
+    expect(loaded).toEqual([]);
+  });
+
+  it('should load from default storage when windowId is null', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U\n#EXTINF:10,\nsegment2.ts',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['segment2.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+    await saveManifestHistory(manifests, null);
+
+    const loaded = await loadManifestHistory(null);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('2');
+  });
+
+  it('should keep manifests separate for different windows', async () => {
+    const manifests1: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+    const manifests2: Manifest[] = [
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['seg2.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    await saveManifestHistory(manifests1, 1);
+    await saveManifestHistory(manifests2, 2);
+
+    const loaded1 = await loadManifestHistory(1);
+    const loaded2 = await loadManifestHistory(2);
+
+    expect(loaded1).toHaveLength(1);
+    expect(loaded1[0].id).toBe('1');
+    expect(loaded2).toHaveLength(1);
+    expect(loaded2[0].id).toBe('2');
+  });
+});
+
+describe('saveManifestHistory', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearChromeStorage();
+  });
+
+  it('should save manifests to storage for a specific window', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    await saveManifestHistory(manifests, 1);
+    const loaded = await loadManifestHistory(1);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('1');
+  });
+
+  it('should overwrite existing manifests', async () => {
+    const manifests1: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video1.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video1.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+    const manifests2: Manifest[] = [
+      {
+        id: '2',
+        m3u8Url: 'https://example.com/video2.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video2.m3u8',
+        expectedSegments: ['seg2.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    await saveManifestHistory(manifests1, 1);
+    await saveManifestHistory(manifests2, 1);
+
+    const loaded = await loadManifestHistory(1);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('2');
+  });
+
+  it('should save to default storage when windowId is null', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+      }
+    ];
+
+    await saveManifestHistory(manifests, null);
+    const loaded = await loadManifestHistory(null);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].id).toBe('1');
+  });
+});
+
+describe('getTabIdFromManifest', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearChromeStorage();
+  });
+
+  it('should return tabId when manifest is found in current window storage', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString(),
+        tabId: 100
+      }
+    ];
+    await saveManifestHistory(manifests, 1);
+
+    const tabId = await getTabIdFromManifest('1');
+    expect(tabId).toBe(100);
+  });
+
+  it('should return undefined when manifest is not found', async () => {
+    const tabId = await getTabIdFromManifest('nonexistent');
+    expect(tabId).toBeUndefined();
+  });
+
+  it('should return undefined when manifest has no tabId', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString()
+        // tabId is undefined
+      }
+    ];
+    await saveManifestHistory(manifests, 1);
+
+    const tabId = await getTabIdFromManifest('1');
+    expect(tabId).toBeUndefined();
+  });
+
+  it('should fallback to default storage when not found in current window', async () => {
+    const manifests: Manifest[] = [
+      {
+        id: '1',
+        m3u8Url: 'https://example.com/video.m3u8',
+        m3u8Content: '#EXTM3U',
+        m3u8FileName: 'video.m3u8',
+        expectedSegments: ['seg1.ts'],
+        capturedAt: new Date().toISOString(),
+        tabId: 200
+      }
+    ];
+    await saveManifestHistory(manifests, null);
+
+    const tabId = await getTabIdFromManifest('1');
+    expect(tabId).toBe(200);
+  });
+
+  it('should handle errors gracefully', async () => {
+    // Mock getCurrentWindowId to throw an error
+    vi.mocked(chrome.windows.getCurrent).mockRejectedValueOnce(new Error('Test error'));
+
+    const tabId = await getTabIdFromManifest('1');
+    expect(tabId).toBeUndefined();
   });
 });

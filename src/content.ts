@@ -11,7 +11,8 @@ import type {
   CreateBlobUrlMessage,
   ReceiveZipChunkMessage,
   CreateBlobUrlFromChunksMessage,
-  CleanupZipChunksMessage
+  CleanupZipChunksMessage,
+  CreateBlobUrlFromStorageMessage
 } from './types/index.js';
 import {
   isGetVideoPreviewMessage,
@@ -660,12 +661,11 @@ chrome.runtime.onMessage.addListener((
   }
 
   // Handle createBlobUrlFromStorage message (legacy, kept for compatibility)
-  // Use type assertion for legacy message that's not in the union type
-  const messageWithAction = message as { action: string; storageKey?: string };
-  if (messageWithAction.action === 'createBlobUrlFromStorage' && 'storageKey' in messageWithAction) {
+  if (message.action === 'createBlobUrlFromStorage') {
+    const storageMessage = message as CreateBlobUrlFromStorageMessage;
     (async (): Promise<void> => {
       try {
-        const storageKey = messageWithAction.storageKey;
+        const storageKey = storageMessage.storageKey;
         if (!storageKey) {
           sendResponse({ error: 'Missing storageKey in message' });
           return;

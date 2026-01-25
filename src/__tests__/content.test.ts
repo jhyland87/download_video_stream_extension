@@ -1,50 +1,13 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { setupDOMMocks } from '../__mocks__/index.js';
 
 /**
  * Unit tests for content script functions
  * Note: These test the core logic, not DOM/Canvas APIs
  */
 
-// Mock DOM and Canvas APIs
-global.document = {
-  getElementsByTagName: vi.fn(),
-  querySelector: vi.fn(),
-  createElement: vi.fn()
-} as unknown as Document;
-
-global.HTMLVideoElement = class {
-  title = '';
-  readyState = 0;
-  videoWidth = 0;
-  videoHeight = 0;
-  currentTime = 0;
-  duration = 0;
-  paused = false;
-  playbackRate = 1.0;
-  muted = false;
-
-  addEventListener = vi.fn();
-  removeEventListener = vi.fn();
-  play = vi.fn().mockResolvedValue(undefined);
-  pause = vi.fn();
-  getAttribute = vi.fn();
-
-  constructor() {
-    // Mock properties
-  }
-} as unknown as typeof HTMLVideoElement;
-
-global.HTMLCanvasElement = class {
-  width = 0;
-  height = 0;
-  getContext = vi.fn().mockReturnValue({
-    drawImage: vi.fn(),
-    canvas: {
-      toDataURL: vi.fn().mockReturnValue('data:image/png;base64,test')
-    }
-  });
-  toDataURL = vi.fn().mockReturnValue('data:image/png;base64,test');
-} as unknown as typeof HTMLCanvasElement;
+// Setup DOM mocks
+setupDOMMocks();
 
 /**
  * Testable version of extractVideoTitle
