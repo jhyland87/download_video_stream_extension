@@ -1,3 +1,6 @@
+> [!NOTE]
+> FYI - This is mostly just to see how well I can get AI to develop an app/extension from scratch. Very few lines are actually written by me. 
+
 # Stream Video Saver Chrome Extension
 
 A Chrome extension that captures HLS stream m3u8 files and their associated segment files, then packages them into a ZIP file for download.
