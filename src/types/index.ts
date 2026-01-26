@@ -88,6 +88,11 @@ export interface WebRequestBodyDetailsWithHeaders extends chrome.webRequest.WebR
 }
 
 /**
+ * Icon types for different extension states
+ */
+export type IconType = 'default' | 'downloading' | 'compressing' | 'saving' | 'found-video';
+
+/**
  * Download format type
  */
 export type DownloadFormat = 'zip';

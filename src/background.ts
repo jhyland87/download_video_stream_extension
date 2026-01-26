@@ -28,6 +28,8 @@ import type {
   WebRequestBodyDetailsWithHeaders,
 } from './types';
 import { logger } from './utils/logger';
+import { getIconType, getIconPaths } from './utils/icons';
+import type { IconType } from './types';
 
 /**
  * Regular expression pattern to match m3u8 files in URLs.
@@ -802,6 +804,21 @@ async function processM3U8Content(
 
   // Update badge with manifest count (only if no active downloads)
   await updateManifestCountBadge(windowId);
+
+  // Update icon to show video found (briefly, then back to default)
+  if (details.tabId && details.tabId > 0) {
+    const foundVideoIconPaths = getIconPaths('found-video');
+    try {
+      await chrome.action.setIcon({ tabId: details.tabId, path: foundVideoIconPaths });
+      // Reset to default after 2 seconds
+      setTimeout(async () => {
+        const defaultIconPaths = getIconPaths('default');
+        await chrome.action.setIcon({ tabId: details.tabId, path: defaultIconPaths });
+      }, 2000);
+    } catch (error) {
+      logger.error('Error setting found-video icon:', error);
+    }
+  }
 
   logger.log(`✅ M3U8 captured and added to history`);
   logger.log(`📋 Found ${segmentUrls.length} segments`);
@@ -2461,6 +2478,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           // Clear badge if no active downloads remain
           if (activeDownloads.size === 0) {
             await chrome.action.setBadgeText({ text: '' });
+            await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128] }); // Light blue with 50% transparency
           }
         }, 2000);
       } catch (error) {
@@ -2650,22 +2668,27 @@ async function updateManifestCountBadge(windowId: number | null = null): Promise
 
     // Update badge with the count for the active tab
     if (count > 0) {
-      // Show manifest count with a different color (purple)
+      // Show manifest count with light blue background
       if (tabId !== undefined) {
         await chrome.action.setBadgeText({ text: String(count), tabId: tabId });
-        await chrome.action.setBadgeBackgroundColor({ color: '#9c27b0', tabId: tabId }); // Purple for manifest count
+        await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128], tabId: tabId }); // Light blue with 50% transparency for manifest count
       } else {
         await chrome.action.setBadgeText({ text: String(count) });
-        await chrome.action.setBadgeBackgroundColor({ color: '#9c27b0' }); // Purple for manifest count
+        await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128] }); // Light blue with 50% transparency for manifest count
       }
     } else {
-      // Clear badge if no manifests
+      // Clear badge if no manifests, but set light blue background
       if (tabId !== undefined) {
         await chrome.action.setBadgeText({ text: '', tabId: tabId });
+        await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128], tabId: tabId }); // Light blue with 50% transparency
       } else {
         await chrome.action.setBadgeText({ text: '' });
+        await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128] }); // Light blue with 50% transparency
       }
     }
+
+    // Always update icon to default when there are no active downloads
+    await updateIcon(null, false, tabId);
   } catch (error) {
     // Silently fail - badge update is not critical
     logger.error('Error updating manifest count badge:', error);
@@ -2678,6 +2701,44 @@ async function updateManifestCountBadge(windowId: number | null = null): Promise
  * @param zipGenerated - Whether ZIP generation has completed (for success color)
  * @param hasError - Whether there was an error (for error color)
  */
+/**
+ * Updates the extension icon based on download state.
+ * Note: Service workers don't have access to DOM APIs like Image or Canvas,
+ * so we can't programmatically add backgrounds. The icon files themselves
+ * should include the background color.
+ * @param progress - Progress information object (null for default icon)
+ * @param zipGenerated - Whether ZIP generation has completed
+ * @param tabId - Optional tab ID for per-tab icons
+ */
+async function updateIcon(progress: DownloadProgress | null, zipGenerated: boolean = false, tabId?: number): Promise<void> {
+  try {
+    const iconType = getIconType(progress, zipGenerated);
+    const iconPaths = getIconPaths(iconType);
+
+    // Get active tab ID if not provided
+    let activeTabId: number | undefined = tabId;
+    if (activeTabId === undefined) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tabs.length > 0 && tabs[0].id) {
+          activeTabId = tabs[0].id;
+        }
+      } catch {
+        // If we can't get tabId, icon will be global
+      }
+    }
+
+    const iconOptions = activeTabId !== undefined
+      ? { tabId: activeTabId, path: iconPaths }
+      : { path: iconPaths };
+
+    logger.log(`🖼️ Updating icon to: ${iconType}`, iconPaths);
+    await chrome.action.setIcon(iconOptions);
+  } catch (error) {
+    logger.error(`Error setting icon:`, error);
+  }
+}
+
 async function updateBadge(progress: DownloadProgress, zipGenerated: boolean = false, hasError: boolean = false, tabId?: number): Promise<void> {
   // Get active tab ID if not provided
   let activeTabId: number | undefined = tabId;
@@ -2694,9 +2755,13 @@ async function updateBadge(progress: DownloadProgress, zipGenerated: boolean = f
 
   const badgeOptions = activeTabId !== undefined ? { tabId: activeTabId } : {};
 
+  // Update icon based on download state
+  await updateIcon(progress, zipGenerated, activeTabId);
+
   if (progress.status === 'complete' || progress.status === 'cancelled') {
     // Clear badge when download is complete or cancelled
     await chrome.action.setBadgeText({ text: '', ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128], ...badgeOptions }); // Light blue with 50% transparency
   } else if (hasError) {
     // Show error indicator
     await chrome.action.setBadgeText({ text: 'ERR', ...badgeOptions });

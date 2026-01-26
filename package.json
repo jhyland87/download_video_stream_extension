@@ -8,7 +8,7 @@
     "build": "npm run clean && npm run build:esbuild && npm run copy-assets",
     "build:esbuild": "node esbuild.config.js",
     "build:watch": "NODE_ENV=development node esbuild.config.js --watch",
-    "copy-assets": "cp -r jszip.min.js dist/ && cp popup.html dist/ && cp sidepanel.html dist/ && cp manifest.json dist/ && cp icon*.png dist/ 2>/dev/null || true && mkdir -p dist/templates && cp src/templates/*.template dist/templates/ 2>/dev/null || true",
+    "copy-assets": "cp -r jszip.min.js dist/ && cp popup.html dist/ && cp sidepanel.html dist/ && cp manifest.json dist/ && cp icon*.png dist/ 2>/dev/null || true && mkdir -p dist/templates && cp src/templates/*.template dist/templates/ 2>/dev/null || true && mkdir -p dist/assets/icons && cp assets/icons/*-48x48.png dist/assets/icons/ 2>/dev/null || true",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
