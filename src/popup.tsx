@@ -255,6 +255,36 @@ const Popup = () => {
     }
   }, []);
 
+  // Helper function to compare two manifest arrays for equality
+  const areManifestsEqual = useCallback((oldManifests: ManifestSummary[], newManifests: ManifestSummary[]): boolean => {
+    if (oldManifests.length !== newManifests.length) {
+      return false;
+    }
+
+    // Compare by ID and capturedAt timestamp (quick comparison)
+    for (let i = 0; i < oldManifests.length; i++) {
+      const oldManifest = oldManifests[i];
+      const newManifest = newManifests[i];
+
+      if (oldManifest.id !== newManifest.id || oldManifest.capturedAt !== newManifest.capturedAt) {
+        return false;
+      }
+
+      // Also check if previewUrls changed (length and first/last URLs)
+      const oldPreviewUrls = oldManifest.previewUrls || [];
+      const newPreviewUrls = newManifest.previewUrls || [];
+      if (oldPreviewUrls.length !== newPreviewUrls.length) {
+        return false;
+      }
+      if (oldPreviewUrls.length > 0 && (oldPreviewUrls[0] !== newPreviewUrls[0] ||
+          oldPreviewUrls[oldPreviewUrls.length - 1] !== newPreviewUrls[newPreviewUrls.length - 1])) {
+        return false;
+      }
+    }
+
+    return true;
+  }, []);
+
   // Update manifest status
   const updateStatus = useCallback(async () => {
     try {
@@ -266,47 +296,65 @@ const Popup = () => {
       } catch (error) {
         // If we can't get the window, continue without window ID
       }
-      
+
       chrome.runtime.sendMessage({ action: 'getStatus', windowId } as ExtensionMessage, (response: ExtensionResponse) => {
         if (chrome.runtime.lastError) {
           logger.error('Error getting status:', chrome.runtime.lastError);
-          setManifests([]);
-          setStatusText('Error loading manifests');
+          // Only update if current state is not already empty
+          setManifests((prev) => {
+            if (prev.length === 0) return prev;
+            return [];
+          });
+          setStatusText((prev) => prev === 'Error loading manifests' ? prev : 'Error loading manifests');
           return;
         }
 
         if (response && 'manifestHistory' in response) {
           const statusResponse = response as GetStatusResponse;
           const newManifests = statusResponse.manifestHistory;
-          
-          // Track the most recently captured domain (first manifest is most recent)
-          if (newManifests.length > 0) {
-            const mostRecent = newManifests[0];
-            if (mostRecent.pageDomain) {
-              setMostRecentDomain(mostRecent.pageDomain);
-              // Clear the flag after a short delay so it only affects the immediate sort
-              setTimeout(() => setMostRecentDomain(null), 100);
+
+          // Check if manifests have actually changed before updating state
+          setManifests((prevManifests) => {
+            const hasChanged = !areManifestsEqual(prevManifests, newManifests);
+
+            // Only update mostRecentDomain if manifests actually changed
+            if (hasChanged && newManifests.length > 0) {
+              const mostRecent = newManifests[0];
+              if (mostRecent.pageDomain) {
+                setMostRecentDomain(mostRecent.pageDomain);
+                // Clear the flag after a short delay so it only affects the immediate sort
+                setTimeout(() => setMostRecentDomain(null), 100);
+              }
             }
-          }
-          
-          setManifests(newManifests);
-          
-          if (newManifests.length === 0) {
-            setStatusText('Monitoring for video streams...');
-          } else {
-            setStatusText(`${newManifests.length} manifest${newManifests.length > 1 ? 's' : ''} captured`);
-          }
+
+            // Return previous reference if unchanged to prevent re-render
+            return hasChanged ? newManifests : prevManifests;
+          });
+
+          // Only update status text if it changed
+          const newStatusText = newManifests.length === 0
+            ? 'Monitoring for video streams...'
+            : `${newManifests.length} manifest${newManifests.length > 1 ? 's' : ''} captured`;
+          setStatusText((prev) => prev === newStatusText ? prev : newStatusText);
         } else {
-          setManifests([]);
-          setStatusText('Monitoring for video streams...');
+          // Only update if current state is not already empty
+          setManifests((prev) => {
+            if (prev.length === 0) return prev;
+            return [];
+          });
+          setStatusText((prev) => prev === 'Monitoring for video streams...' ? prev : 'Monitoring for video streams...');
         }
       });
     } catch (error) {
       logger.error('Exception in updateStatus:', error);
-      setManifests([]);
-      setStatusText('Error loading manifests');
+      // Only update if current state is not already in error state
+      setManifests((prev) => {
+        if (prev.length === 0) return prev;
+        return [];
+      });
+      setStatusText((prev) => prev === 'Error loading manifests' ? prev : 'Error loading manifests');
     }
-  }, []);
+  }, [areManifestsEqual]);
 
   // Download manifest
   const downloadManifest = useCallback((manifestId: string, _format: DownloadFormat = 'zip') => {
@@ -509,13 +557,13 @@ const Popup = () => {
 
   // Group manifests by domain
   const domainGroups = groupedManifests();
-  
+
   // Calculate pagination by groups (each group can contain multiple manifests)
   const totalPages = Math.ceil(domainGroups.length / ITEMS_PER_PAGE);
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const endIndex = startIndex + ITEMS_PER_PAGE;
   const paginatedGroups = domainGroups.slice(startIndex, endIndex);
-  
+
   // Reset to page 1 if current page is out of bounds
   useEffect(() => {
     if (domainGroups.length > 0 && currentPage > totalPages) {
