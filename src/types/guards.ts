@@ -123,6 +123,7 @@ export function isDownloadProgressMessage(message: unknown): message is Download
   return (
     msg.action === 'downloadProgress' &&
     typeof msg.downloadId === 'string' &&
+    typeof msg.manifestId === 'string' &&
     typeof msg.downloaded === 'number' &&
     typeof msg.total === 'number' &&
     typeof msg.status === 'string'

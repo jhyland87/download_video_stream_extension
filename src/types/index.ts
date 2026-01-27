@@ -218,6 +218,7 @@ export interface GetDownloadStatusMessage extends BaseMessage {
 export interface DownloadProgressMessage extends BaseMessage {
   action: 'downloadProgress';
   downloadId: string;
+  manifestId: string; // Manifest ID for this download
   downloaded: number;
   total: number;
   status: DownloadStatus;
@@ -499,7 +500,9 @@ export type ExtensionResponse =
 export type {
   PreviewImageProps,
   ManifestItemProps,
-  ProgressBarProps
+  ProgressBarProps,
+  DownloadState,
+  DomainGroup
 } from './popup';
 
 // Re-export ignore list types

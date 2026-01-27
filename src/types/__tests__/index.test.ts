@@ -118,6 +118,7 @@ describe('Type guards', () => {
       const message: DownloadProgressMessage = {
         action: 'downloadProgress',
         downloadId: 'test-id',
+        manifestId: 'manifest-123',
         downloaded: 5,
         total: 10,
         status: 'downloading'

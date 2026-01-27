@@ -2,7 +2,7 @@
  * Utility functions for popup UI formatting and data manipulation
  */
 
-import type { ManifestSummary } from '../types';
+import type { ManifestSummary, DomainGroup } from '../types';
 
 /**
  * Formats bytes into a human-readable string (B, KB, MB, GB).
@@ -88,23 +88,16 @@ export function formatPageUrl(url: string | undefined): string | undefined {
 }
 
 /**
- * Domain group interface for manifest grouping
- */
-export interface DomainGroup {
-  domain: string;
-  manifests: ManifestSummary[];
-  mostRecentCapture: string; // ISO timestamp of most recent manifest in group
-}
-
-/**
  * Groups manifests by domain and sorts them.
  * @param manifestsList - List of manifests to group
  * @param mostRecentDomain - Optional domain to prioritize at the top
- * @returns Array of domain groups sorted by most recent capture
+ * @param activeDownloadIds - Set of manifest IDs that have active downloads
+ * @returns Array of domain groups sorted by most recent capture, with active downloads prioritized
  */
 export function groupManifestsByDomain(
   manifestsList: ManifestSummary[],
-  mostRecentDomain: string | null = null
+  mostRecentDomain: string | null = null,
+  activeDownloadIds: Set<string> = new Set()
 ): DomainGroup[] {
   // Group by domain
   const domainMap = new Map<string, ManifestSummary[]>();
@@ -116,12 +109,20 @@ export function groupManifestsByDomain(
     domainMap.get(domain)!.push(manifest);
   }
 
-  // Sort within each group by capturedAt (newest first)
+  // Sort within each group: active downloads first, then by capturedAt (newest first)
   const groups: DomainGroup[] = [];
   for (const [domain, domainManifests] of domainMap.entries()) {
-    const sorted = domainManifests.sort(
-      (a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime()
-    );
+    const sorted = domainManifests.sort((a, b) => {
+      const aIsActive = activeDownloadIds.has(a.id);
+      const bIsActive = activeDownloadIds.has(b.id);
+
+      // If one has active download and the other doesn't, prioritize the active one
+      if (aIsActive && !bIsActive) return -1;
+      if (!aIsActive && bIsActive) return 1;
+
+      // If both have active downloads or neither does, sort by capturedAt (newest first)
+      return new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime();
+    });
     const mostRecentCapture = sorted[0]?.capturedAt || '';
     groups.push({
       domain,
@@ -130,9 +131,17 @@ export function groupManifestsByDomain(
     });
   }
 
-  // Sort groups by most recent capture (newest first)
+  // Sort groups: groups with active downloads first, then by most recent capture
   // If a domain was just captured, bump it to the top
   groups.sort((a, b) => {
+    // Check if groups have active downloads
+    const aHasActive = a.manifests.some((m: ManifestSummary) => activeDownloadIds.has(m.id));
+    const bHasActive = b.manifests.some((m: ManifestSummary) => activeDownloadIds.has(m.id));
+
+    // If one group has active downloads and the other doesn't, prioritize it
+    if (aHasActive && !bHasActive) return -1;
+    if (!aHasActive && bHasActive) return 1;
+
     // If mostRecentDomain is set and matches a group, prioritize it
     if (mostRecentDomain && a.domain === mostRecentDomain) {
       return -1;

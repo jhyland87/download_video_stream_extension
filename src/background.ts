@@ -2807,10 +2807,11 @@ async function notifyDownloadProgress(downloadId: string, progress: DownloadProg
     await updateManifestCountBadge();
   }
 
-  // Send message to popup
+  // Send message to popup with manifestId
   chrome.runtime.sendMessage({
     action: 'downloadProgress',
     downloadId,
+    manifestId: download?.manifestId || '',
     ...progress
   } as ExtensionMessage).catch(() => {
     // Ignore if no listeners

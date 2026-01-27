@@ -26,7 +26,8 @@ import type {
   PreviewImageProps,
   ManifestItemProps,
   ProgressBarProps,
-  AddToIgnoreListMessage
+  AddToIgnoreListMessage,
+  DownloadState
 } from './types';
 import { logger } from './utils/logger';
 import {
@@ -35,9 +36,9 @@ import {
   formatDuration,
   extractFilenameFromUrl,
   formatPageUrl,
-  groupManifestsByDomain,
-  type DomainGroup
+  groupManifestsByDomain
 } from './utils/popup';
+import type { DomainGroup } from './types';
 
 // CRITICAL: This should appear in console immediately when script loads
 logger.log('popup.tsx loaded - script is executing');
@@ -105,7 +106,7 @@ const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
 /**
  * Component for displaying a single manifest item.
  */
-const ManifestItem = ({ manifest, onDownload, onClear }: ManifestItemProps) => {
+const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, onCancel, isCompleted }: ManifestItemProps & { isCompleted: boolean }) => {
   const date = new Date(manifest.capturedAt);
   const timeStr = date.toLocaleTimeString();
   const displayTitle = manifest.title || manifest.fileName;
@@ -157,15 +158,61 @@ const ManifestItem = ({ manifest, onDownload, onClear }: ManifestItemProps) => {
           </a>
         )}
         <div className="manifest-item-info">{infoText}</div>
-        <div className="manifest-item-actions">
+      </div>
+      <div className="manifest-item-actions">
+        {downloadProgress && downloadProgress.status !== 'complete' && downloadProgress.status !== 'cancelled' ? (
+          <div className="manifest-item-progress-container">
+            <div className="manifest-item-progress-wrapper">
+              <div className="manifest-item-progress-bar">
+                <div
+                  className="manifest-item-progress-fill"
+                  style={{ width: `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%` }}
+                >
+                  {Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%
+                </div>
+              </div>
+              <div className="manifest-item-progress-info">
+                {(() => {
+                  let infoText = 'Starting download...';
+                  if (downloadProgress.status === 'creating_zip') {
+                    if (downloadProgress.zipSize) {
+                      infoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
+                    } else if (downloadProgress.totalBytes) {
+                      infoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
+                    } else {
+                      infoText = 'Creating ZIP file...';
+                    }
+                  } else if (downloadProgress.status === 'downloading') {
+                    const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
+                    const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
+                      ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
+                      : '            ';
+                    const size = downloadProgress.downloadedBytes !== undefined
+                      ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
+                      : '            ';
+                    infoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
+                  }
+                  return infoText;
+                })()}
+              </div>
+            </div>
+            <button
+              className="button secondary btn-cancel-download"
+              onClick={() => onCancel(manifest.id)}
+              title="Cancel download"
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
           <button
-            className="button primary btn-download-zip"
+            className={`button ${isCompleted ? 'secondary' : 'primary'} btn-download-zip`}
             data-manifest-id={manifest.id}
             onClick={() => onDownload(manifest.id)}
           >
-            Download ZIP
+            {isCompleted ? 'Zip Downloaded' : 'Download ZIP'}
           </button>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -233,11 +280,10 @@ const ITEMS_PER_PAGE = 5;
 
 const Popup = () => {
   const [manifests, setManifests] = useState<ManifestSummary[]>([]);
-  const [progress, setProgress] = useState<DownloadProgress | null>(null);
+  const [downloads, setDownloads] = useState<Map<string, DownloadState>>(new Map());
+  const [completedDownloads, setCompletedDownloads] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>('');
   const [statusText, setStatusText] = useState<string>('Loading extension...');
-  const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
-  const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [mostRecentDomain, setMostRecentDomain] = useState<string | null>(null);
   const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -358,21 +404,39 @@ const Popup = () => {
 
   // Download manifest
   const downloadManifest = useCallback((manifestId: string, _format: DownloadFormat = 'zip') => {
-    // Prevent double-clicks
-    if (selectedManifestId === manifestId && progress && progress.status !== 'complete' && progress.status !== 'cancelled') {
-      logger.log(`Download already in progress for manifest ${manifestId}, ignoring duplicate click`);
-      return;
+    // Prevent double-clicks - check if download already in progress for this manifest
+    if (downloads.has(manifestId)) {
+      const downloadState = downloads.get(manifestId);
+      if (downloadState && downloadState.progress.status !== 'complete' && downloadState.progress.status !== 'cancelled') {
+        logger.log(`Download already in progress for manifest ${manifestId}, ignoring duplicate click`);
+        return;
+      }
     }
 
-    setSelectedManifestId(manifestId);
     setError('');
-    setProgress({
-      downloaded: 0,
-      total: 1,
-      status: 'downloading',
-      downloadedBytes: 0,
-      totalBytes: undefined,
-      downloadSpeed: 0
+
+    // Remove from completed set when starting a new download
+    setCompletedDownloads((prev) => {
+      const updated = new Set(prev);
+      updated.delete(manifestId);
+      return updated;
+    });
+
+    // Set initial progress state for this manifest
+    setDownloads((prev) => {
+      const newDownloads = new Map(prev);
+      newDownloads.set(manifestId, {
+        downloadId: '', // Will be set when download starts
+        progress: {
+          downloaded: 0,
+          total: 1,
+          status: 'starting',
+          downloadedBytes: 0,
+          totalBytes: undefined,
+          downloadSpeed: 0
+        }
+      });
+      return newDownloads;
     });
 
     chrome.runtime.sendMessage({
@@ -383,27 +447,39 @@ const Popup = () => {
       if (chrome.runtime.lastError) {
         const errorMsg = chrome.runtime.lastError.message || 'Unknown error';
         setError(errorMsg);
-        setProgress(null);
+        setDownloads((prev) => {
+          const newDownloads = new Map(prev);
+          newDownloads.delete(manifestId);
+          return newDownloads;
+        });
       } else if (response && 'error' in response) {
         const errorMsg = response.error || 'Unknown error';
         setError(errorMsg);
-        setProgress(null);
+        setDownloads((prev) => {
+          const newDownloads = new Map(prev);
+          newDownloads.delete(manifestId);
+          return newDownloads;
+        });
       }
     });
-  }, [selectedManifestId, progress]);
+  }, [downloads]);
 
-  // Cancel download
-  const cancelDownload = useCallback(() => {
-    if (activeDownloadId) {
+  // Cancel download for a specific manifest
+  const cancelDownload = useCallback((manifestId: string) => {
+    const downloadState = downloads.get(manifestId);
+    if (downloadState && downloadState.downloadId) {
       chrome.runtime.sendMessage({
         action: 'cancelDownload',
-        downloadId: activeDownloadId
+        downloadId: downloadState.downloadId
       } as ExtensionMessage, () => {
-        setActiveDownloadId(null);
-        setProgress(null);
+        setDownloads((prev) => {
+          const newDownloads = new Map(prev);
+          newDownloads.delete(manifestId);
+          return newDownloads;
+        });
       });
     }
-  }, [activeDownloadId]);
+  }, [downloads]);
 
   // Clear manifest
   const clearManifest = useCallback((manifestId: string) => {
@@ -435,8 +511,13 @@ const Popup = () => {
 
   // Group manifests by domain and sort
   const groupedManifests = useCallback(() => {
-    return groupManifestsByDomain(manifests, mostRecentDomain);
-  }, [manifests, mostRecentDomain]);
+    // Get set of manifest IDs with active downloads
+    const activeDownloadIds = new Set<string>();
+    for (const [manifestId] of downloads.entries()) {
+      activeDownloadIds.add(manifestId);
+    }
+    return groupManifestsByDomain(manifests, mostRecentDomain, activeDownloadIds);
+  }, [manifests, mostRecentDomain, downloads]);
 
   // Block a domain (add to ignore list and remove manifests)
   const blockDomain = useCallback((domain: string) => {
@@ -464,29 +545,70 @@ const Popup = () => {
     const messageListener = (message: ExtensionMessage) => {
       if (message.action === 'downloadProgress') {
         const progressMessage = message as DownloadProgressMessage;
-        setActiveDownloadId(progressMessage.downloadId);
-        setProgress({
-          downloaded: progressMessage.downloaded,
-          total: progressMessage.total,
-          status: progressMessage.status,
-          downloadedBytes: progressMessage.downloadedBytes,
-          totalBytes: progressMessage.totalBytes,
-          downloadSpeed: progressMessage.downloadSpeed,
-          zipSize: progressMessage.zipSize
-        });
 
-        // Clear progress after completion
-        if (progressMessage.status === 'complete' || progressMessage.status === 'cancelled') {
-          setTimeout(() => {
-            setProgress(null);
-            setActiveDownloadId(null);
-          }, 2000);
-        }
+        // Update progress for the specific manifest
+        setDownloads((prev) => {
+          const newDownloads = new Map(prev);
+
+          // Use manifestId from the message
+          if (progressMessage.manifestId) {
+            newDownloads.set(progressMessage.manifestId, {
+              downloadId: progressMessage.downloadId,
+              progress: {
+                downloaded: progressMessage.downloaded,
+                total: progressMessage.total,
+                status: progressMessage.status,
+                downloadedBytes: progressMessage.downloadedBytes,
+                totalBytes: progressMessage.totalBytes,
+                downloadSpeed: progressMessage.downloadSpeed,
+                zipSize: progressMessage.zipSize
+              }
+            });
+
+            // Clear progress after completion
+            if (progressMessage.status === 'complete' || progressMessage.status === 'cancelled') {
+              if (progressMessage.status === 'complete') {
+                // Mark this manifest as having completed download
+                setCompletedDownloads((prev) => {
+                  const updated = new Set(prev);
+                  updated.add(progressMessage.manifestId);
+                  return updated;
+                });
+              } else {
+                // Remove from completed set if cancelled
+                setCompletedDownloads((prev) => {
+                  const updated = new Set(prev);
+                  updated.delete(progressMessage.manifestId);
+                  return updated;
+                });
+              }
+              setTimeout(() => {
+                setDownloads((current) => {
+                  const updated = new Map(current);
+                  updated.delete(progressMessage.manifestId);
+                  return updated;
+                });
+              }, 2000);
+            }
+          }
+
+          return newDownloads;
+        });
       } else if (message.action === 'downloadError') {
         const errorMessage = message as DownloadErrorMessage;
         setError(errorMessage.error || 'Download failed');
-        setProgress(null);
-        setActiveDownloadId(null);
+
+        // Remove the failed download - we need to find which manifest it belongs to
+        setDownloads((prev) => {
+          const newDownloads = new Map(prev);
+          for (const [manifestId, downloadState] of prev.entries()) {
+            if (downloadState.downloadId === errorMessage.downloadId) {
+              newDownloads.delete(manifestId);
+              break;
+            }
+          }
+          return newDownloads;
+        });
       } else if (message.action === 'manifestCaptured') {
         const capturedMessage = message as ManifestCapturedMessage;
         logger.log(`Manifest captured: ${capturedMessage.fileName}`);
@@ -535,9 +657,15 @@ const Popup = () => {
       if (response && 'downloads' in response) {
         const statusResponse = response as GetDownloadStatusResponse;
         if (statusResponse.downloads && statusResponse.downloads.length > 0) {
-          const download = statusResponse.downloads[0];
-          setActiveDownloadId(download.downloadId);
-          setProgress(download.progress);
+          // Restore download states for all active downloads
+          const newDownloads = new Map<string, DownloadState>();
+          for (const download of statusResponse.downloads) {
+            newDownloads.set(download.manifestId, {
+              downloadId: download.downloadId,
+              progress: download.progress
+            });
+          }
+          setDownloads(newDownloads);
         }
       }
     });
@@ -591,7 +719,6 @@ const Popup = () => {
         {statusText}
       </div>
 
-      <ProgressBar progress={progress} onCancel={cancelDownload} />
 
       <div id="manifestHistory" className="manifest-history">
         {manifests.length === 0 ? (
@@ -617,6 +744,9 @@ const Popup = () => {
                     manifest={manifest}
                     onDownload={downloadManifest}
                     onClear={clearManifest}
+                    downloadProgress={downloads.get(manifest.id)?.progress}
+                    onCancel={cancelDownload}
+                    isCompleted={completedDownloads.has(manifest.id)}
                   />
                 ))}
               </div>
