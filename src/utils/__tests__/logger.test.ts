@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { logger } from '../logger';
+import { logger, initLogger, setLogLevels, getLogLevels, resetLogLevels } from '../logger';
 
 describe('Logger Utility', () => {
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
@@ -95,6 +95,11 @@ describe('Logger Utility', () => {
   });
 
   describe('logger.debug', () => {
+    beforeEach(async () => {
+      // Enable debug for these tests
+      await setLogLevels({ debug: true });
+    });
+
     it('should prefix a debug message', () => {
       logger.debug('Debug message');
       expect(consoleDebugSpy).toHaveBeenCalledWith('[Stream Video Saver] Debug message');
@@ -240,6 +245,109 @@ describe('Logger Utility', () => {
       const count = 5;
       logger.log(`Manifest captured: ${manifestId}. Remaining: ${count}`);
       expect(consoleLogSpy).toHaveBeenCalledWith('[Stream Video Saver] Manifest captured: abc123. Remaining: 5');
+    });
+  });
+
+  describe('Log level filtering', () => {
+    beforeEach(async () => {
+      // Reset to default config before each test
+      await resetLogLevels();
+    });
+
+    it('should hide debug logs by default', async () => {
+      await initLogger();
+      logger.debug('Debug message');
+      expect(consoleDebugSpy).not.toHaveBeenCalled();
+    });
+
+    it('should show log messages by default', async () => {
+      await initLogger();
+      logger.log('Log message');
+      expect(consoleLogSpy).toHaveBeenCalled();
+    });
+
+    it('should show error messages by default', async () => {
+      await initLogger();
+      logger.error('Error message');
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    });
+
+    it('should show debug logs when enabled', async () => {
+      await setLogLevels({ debug: true });
+      logger.debug('Debug message');
+      expect(consoleDebugSpy).toHaveBeenCalledWith('[Stream Video Saver] Debug message');
+    });
+
+    it('should hide log messages when disabled', async () => {
+      await setLogLevels({ log: false });
+      logger.log('Log message');
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+    });
+
+    it('should hide info messages when disabled', async () => {
+      await setLogLevels({ info: false });
+      logger.info('Info message');
+      expect(consoleInfoSpy).not.toHaveBeenCalled();
+    });
+
+    it('should hide warn messages when disabled', async () => {
+      await setLogLevels({ warn: false });
+      logger.warn('Warn message');
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should hide error messages when disabled', async () => {
+      await setLogLevels({ error: false });
+      logger.error('Error message');
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should allow enabling multiple levels at once', async () => {
+      await setLogLevels({ debug: true, log: true, info: true });
+      logger.debug('Debug message');
+      logger.log('Log message');
+      logger.info('Info message');
+      expect(consoleDebugSpy).toHaveBeenCalled();
+      expect(consoleLogSpy).toHaveBeenCalled();
+      expect(consoleInfoSpy).toHaveBeenCalled();
+    });
+
+    it('should allow disabling multiple levels at once', async () => {
+      await setLogLevels({ log: false, info: false });
+      logger.log('Log message');
+      logger.info('Info message');
+      logger.error('Error message');
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+      expect(consoleInfoSpy).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalled(); // Error should still work
+    });
+
+    it('should get current log level configuration', async () => {
+      await initLogger();
+      const config = getLogLevels();
+      expect(config).toHaveProperty('debug');
+      expect(config).toHaveProperty('log');
+      expect(config).toHaveProperty('info');
+      expect(config).toHaveProperty('warn');
+      expect(config).toHaveProperty('error');
+      expect(config.debug).toBe(false); // Default should be false
+    });
+
+    it('should reset log levels to default', async () => {
+      await setLogLevels({ debug: true, log: false });
+      await resetLogLevels();
+      const config = getLogLevels();
+      expect(config.debug).toBe(false);
+      expect(config.log).toBe(true);
+    });
+
+    it('should work without chrome.storage (fallback to defaults)', () => {
+      // Test that logger works even when chrome.storage is unavailable
+      // This simulates test environment or when storage API is not available
+      logger.debug('Debug message');
+      logger.log('Log message');
+      expect(consoleDebugSpy).not.toHaveBeenCalled(); // Debug disabled by default
+      expect(consoleLogSpy).toHaveBeenCalled(); // Log enabled by default
     });
   });
 });

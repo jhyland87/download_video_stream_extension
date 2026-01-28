@@ -27,7 +27,9 @@ import type {
   ManifestItemProps,
   ProgressBarProps,
   AddToIgnoreListMessage,
-  DownloadState
+  DownloadState,
+  CleanupDownloadsMessage,
+  CleanupDownloadsResponse
 } from './types';
 import { logger } from './utils/logger';
 import {
@@ -502,6 +504,27 @@ const Popup = () => {
     });
   }, [updateStatus]);
 
+  // Cleanup downloads - cancel all active downloads and clean up storage
+  const cleanupDownloads = useCallback(async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'cleanupDownloads'
+      } as CleanupDownloadsMessage) as CleanupDownloadsResponse | { error: string };
+
+      if ('error' in response) {
+        setError(`Cleanup failed: ${response.error}`);
+      } else {
+        logger.log(`Cleanup complete: ${response.canceled} download(s) canceled, ${response.storageKeysCleaned} storage key(s) cleaned`);
+        // Refresh status to update UI
+        await updateStatus();
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setError(`Cleanup error: ${errorMessage}`);
+      logger.error('Error cleaning up downloads:', error);
+    }
+  }, [updateStatus]);
+
   // Clear all manifests
   const clearAllManifests = useCallback(() => {
     chrome.runtime.sendMessage({ action: 'clearManifest' } as ExtensionMessage, (response: ExtensionResponse) => {
@@ -784,27 +807,39 @@ const Popup = () => {
         </div>
       )}
 
-      {manifests.length > 0 && (
-        <button
-          className="button secondary clear-all-btn"
-          onClick={clearAllManifests}
-        >
-          Clear All Manifests
-        </button>
-      )}
-
       {error && (
         <div className="error show">
           Error: {error}
         </div>
       )}
 
-      <button
-        className="button secondary full-width"
-        onClick={openIgnoreListSidePanel}
-      >
-        Manage Ignore List
-      </button>
+      <div className="action-buttons">
+        {manifests.length > 0 && (
+          <button
+            className="button secondary"
+            onClick={clearAllManifests}
+          >
+            Clear All Manifests
+          </button>
+        )}
+
+        {(downloads.size > 0 || manifests.length > 0) && (
+          <button
+            className="button secondary"
+            onClick={cleanupDownloads}
+            title="Cancel all active downloads and clean up stored ZIP chunks"
+          >
+            Cleanup Downloads
+          </button>
+        )}
+
+        <button
+          className="button secondary"
+          onClick={openIgnoreListSidePanel}
+        >
+          Manage Ignore List
+        </button>
+      </div>
     </div>
   );
 };

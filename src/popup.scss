@@ -320,10 +320,13 @@ h1 {
   padding: 5px 12px;
 }
 
-.clear-all-btn {
-  margin-top: 10px;
-  padding: 5px 12px;
+// Bottom action buttons - consistent styling
+.clear-all-btn,
+.cleanup-btn {
+  margin-top: 8px;
+  padding: 8px 12px;
   width: 100%;
+  font-size: 12px;
 }
 
 .manifest-history {
@@ -413,9 +416,26 @@ h1 {
   text-align: center;
 }
 
-// Manage Ignore List button specific styling
-.button.full-width {
+// Bottom action buttons container
+.action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e0e0e0;
+}
+
+// All bottom action buttons should be consistent
+.action-buttons .button,
+.clear-all-btn,
+.cleanup-btn,
+.button.full-width {
+  margin-top: 0;
+  padding: 8px 12px;
+  width: 100%;
+  font-size: 12px;
+  text-align: center;
 }
 
 // Progress fill dynamic width is handled inline as it's calculated dynamically

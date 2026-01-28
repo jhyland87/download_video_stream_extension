@@ -1,9 +1,64 @@
 /**
  * @fileoverview Logger utility for consistent console logging with extension name prefix.
  * All console methods are wrapped to automatically prefix messages with "[Stream Video Saver]".
+ * Supports filtering log levels via configuration stored in chrome.storage.local.
  */
 
+import type { LogLevel, LogLevelConfig } from '../types';
+
 const EXTENSION_NAME = '[Stream Video Saver]';
+const STORAGE_KEY = 'loggerConfig';
+
+/**
+ * Default log level configuration (debug hidden by default)
+ */
+const DEFAULT_CONFIG: LogLevelConfig = {
+  debug: false,
+  log: true,
+  info: true,
+  warn: true,
+  error: true
+};
+
+/**
+ * Current log level configuration (cached in memory)
+ */
+let currentConfig: LogLevelConfig = { ...DEFAULT_CONFIG };
+let configLoaded = false;
+
+/**
+ * Loads log level configuration from chrome.storage.local.
+ * Falls back to default config if storage is unavailable or unset.
+ */
+async function loadConfig(): Promise<void> {
+  if (configLoaded) {
+    return;
+  }
+
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      const result = await chrome.storage.local.get(STORAGE_KEY);
+      if (result[STORAGE_KEY]) {
+        currentConfig = { ...DEFAULT_CONFIG, ...result[STORAGE_KEY] };
+      }
+    }
+  } catch (error) {
+    // If storage is unavailable (e.g., in tests), use default config
+    currentConfig = { ...DEFAULT_CONFIG };
+  }
+  configLoaded = true;
+}
+
+/**
+ * Checks if a log level is enabled.
+ * @param level - The log level to check
+ * @returns true if the level is enabled, false otherwise
+ */
+function isLevelEnabled(level: LogLevel): boolean {
+  // Load config synchronously if not loaded (for immediate use)
+  // In practice, config will be loaded before first use via initLogger()
+  return currentConfig[level] ?? DEFAULT_CONFIG[level];
+}
 
 /**
  * Formats a message by prepending the extension name.
@@ -31,28 +86,38 @@ function formatMessage(...args: unknown[]): unknown[] {
 }
 
 /**
- * Wrapped console object with automatic extension name prefixing.
- * All methods preserve their original functionality while adding the prefix.
+ * Wrapped console object with automatic extension name prefixing and log level filtering.
+ * All methods preserve their original functionality while adding the prefix and checking if the level is enabled.
  */
 export const logger = {
   log: (...args: unknown[]): void => {
-    console.log(...formatMessage(...args));
+    if (isLevelEnabled('log')) {
+      console.log(...formatMessage(...args));
+    }
   },
 
   warn: (...args: unknown[]): void => {
-    console.warn(...formatMessage(...args));
+    if (isLevelEnabled('warn')) {
+      console.warn(...formatMessage(...args));
+    }
   },
 
   error: (...args: unknown[]): void => {
-    console.error(...formatMessage(...args));
+    if (isLevelEnabled('error')) {
+      console.error(...formatMessage(...args));
+    }
   },
 
   debug: (...args: unknown[]): void => {
-    console.debug(...formatMessage(...args));
+    if (isLevelEnabled('debug')) {
+      console.debug(...formatMessage(...args));
+    }
   },
 
   info: (...args: unknown[]): void => {
-    console.info(...formatMessage(...args));
+    if (isLevelEnabled('info')) {
+      console.info(...formatMessage(...args));
+    }
   },
 
   group: (...args: unknown[]): void => {
@@ -67,3 +132,43 @@ export const logger = {
     console.groupEnd();
   }
 };
+
+/**
+ * Initializes the logger by loading configuration from storage.
+ * Should be called early in the application lifecycle.
+ */
+export async function initLogger(): Promise<void> {
+  await loadConfig();
+}
+
+/**
+ * Sets the log level configuration and saves it to storage.
+ * @param config - Partial log level configuration (only specified levels will be updated)
+ */
+export async function setLogLevels(config: Partial<LogLevelConfig>): Promise<void> {
+  currentConfig = { ...currentConfig, ...config };
+  configLoaded = true;
+
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      await chrome.storage.local.set({ [STORAGE_KEY]: currentConfig });
+    }
+  } catch (error) {
+    // If storage is unavailable, just update in-memory config
+  }
+}
+
+/**
+ * Gets the current log level configuration.
+ * @returns Current log level configuration
+ */
+export function getLogLevels(): LogLevelConfig {
+  return { ...currentConfig };
+}
+
+/**
+ * Resets log levels to default configuration.
+ */
+export async function resetLogLevels(): Promise<void> {
+  await setLogLevels(DEFAULT_CONFIG);
+}

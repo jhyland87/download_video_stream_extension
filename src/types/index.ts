@@ -191,7 +191,8 @@ export type MessageAction =
   | 'receiveZipChunk'
   | 'createBlobUrlFromChunks'
   | 'cleanupZipChunks'
-  | 'createBlobUrlFromStorage'; // Legacy message, kept for compatibility
+  | 'createBlobUrlFromStorage' // Legacy message, kept for compatibility
+  | 'cleanupDownloads';
 
 /**
  * Base message interface
@@ -441,6 +442,21 @@ export interface CleanupZipChunksResponse {
 }
 
 /**
+ * Message to cleanup all downloads and stored chunks
+ */
+export interface CleanupDownloadsMessage extends BaseMessage {
+  action: 'cleanupDownloads';
+}
+
+/**
+ * Response for cleanupDownloads action
+ */
+export interface CleanupDownloadsResponse {
+  canceled: number; // Number of downloads canceled
+  storageKeysCleaned: number; // Number of storage keys cleaned
+}
+
+/**
  * Union type for all content script responses
  */
 export type ContentScriptResponse =
@@ -480,7 +496,8 @@ export type ExtensionMessage =
   | ReceiveZipChunkMessage
   | CreateBlobUrlFromChunksMessage
   | CleanupZipChunksMessage
-  | CreateBlobUrlFromStorageMessage;
+  | CreateBlobUrlFromStorageMessage
+  | CleanupDownloadsMessage;
 
 /**
  * Response for getStatus action
@@ -530,6 +547,7 @@ export type ExtensionResponse =
   | SuccessResponse
   | IgnoreListResponse
   | GetCurrentTabResponse
+  | CleanupDownloadsResponse
   | { error: string };
 
 // Re-export popup component types
@@ -565,6 +583,22 @@ export interface FolderAndFilename {
 export interface TestManifest {
   m3u8Url: string;
   title?: string;
+}
+
+/**
+ * Log levels supported by the logger
+ */
+export type LogLevel = 'debug' | 'log' | 'info' | 'warn' | 'error';
+
+/**
+ * Configuration for which log levels are enabled
+ */
+export interface LogLevelConfig {
+  debug: boolean;
+  log: boolean;
+  info: boolean;
+  warn: boolean;
+  error: boolean;
 }
 
 // Re-export type guards from guards.ts for convenience

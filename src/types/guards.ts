@@ -224,6 +224,15 @@ export function isCleanupZipChunksMessage(message: { action: string }): message 
 }
 
 /**
+ * Type guard to check if a message is CleanupDownloadsMessage
+ * @param message - Message to check
+ * @returns True if message is CleanupDownloadsMessage
+ */
+export function isCleanupDownloadsMessage(message: { action: string }): message is CleanupDownloadsMessage {
+  return message.action === 'cleanupDownloads';
+}
+
+/**
  * Type guard to check if a value is an ArrayBuffer
  * @param value - The value to check
  * @returns True if value is an ArrayBuffer

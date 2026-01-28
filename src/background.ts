@@ -34,8 +34,10 @@ import type {
   Manifest,
   DownloadProgress,
   ActiveDownload,
+  CleanupDownloadsMessage,
+  CleanupDownloadsResponse,
 } from './types';
-import { logger } from './utils/logger';
+import { logger, initLogger } from './utils/logger';
 import { getIconType, getIconPaths } from './utils/icons';
 import type { IconType } from './types';
 
@@ -45,9 +47,11 @@ import type { IconType } from './types';
  */
 const M3U8_PATTERN = /\.m3u8(\?|$)/i;
 
-const BATCH_SIZE = 10;
-
-const RETRY_BATCH_SIZE = 5;
+// Increased batch sizes for faster parallel downloads
+// BATCH_SIZE: Number of segments to download concurrently
+// Higher values = faster downloads but more memory/network usage
+const BATCH_SIZE = 30; // Increased from 10 to 30 for faster downloads
+const RETRY_BATCH_SIZE = 15; // Increased from 5 to 15 for faster retries
 
 /**
  * Maximum number of manifests to keep in history.
@@ -152,8 +156,13 @@ function generateManifestId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-logger.log('Background script loaded');
-logger.log('Starting continuous monitoring for m3u8 files...');
+// Initialize logger configuration (loads from storage)
+// Use IIFE to handle async initialization
+(async () => {
+  await initLogger();
+  logger.log('Background script loaded');
+  logger.log('Starting continuous monitoring for m3u8 files...');
+})();
 
 /**
  * Map to store request headers by requestId for m3u8 requests.
@@ -396,6 +405,94 @@ function handleCancelDownload(message: CancelDownloadMessage, sendResponse: (res
   cancelDownload(downloadId);
   const response: SuccessResponse = { success: true };
   sendResponse(response);
+}
+
+/**
+ * Handles cleanup downloads message - cancels all active downloads and cleans up storage
+ */
+async function handleCleanupDownloads(
+  _message: CleanupDownloadsMessage,
+  sendResponse: (response: ExtensionResponse) => void
+): Promise<void> {
+  try {
+    let canceledCount = 0;
+    let storageKeysCleaned = 0;
+
+    // Cancel all active downloads
+    const downloadIds = Array.from(activeDownloads.keys());
+    for (const downloadId of downloadIds) {
+      try {
+        cancelDownload(downloadId);
+        canceledCount++;
+      } catch (error) {
+        logger.error(`Error canceling download ${downloadId}:`, error);
+      }
+    }
+
+    // Clean up all ZIP chunk storage keys from chrome.storage.local
+    try {
+      const allStorage = await chrome.storage.local.get(null);
+      const keysToRemove: string[] = [];
+
+      // Find all keys that match ZIP chunk patterns: *_chunk_* or *_chunks or *_mimeType or *_filename
+      for (const key in allStorage) {
+        if (key.includes('_chunk_') || key.endsWith('_chunks') || key.endsWith('_mimeType') || key.endsWith('_filename')) {
+          keysToRemove.push(key);
+        }
+      }
+
+      if (keysToRemove.length > 0) {
+        await chrome.storage.local.remove(keysToRemove);
+        storageKeysCleaned = keysToRemove.length;
+        logger.log(`Cleaned up ${storageKeysCleaned} storage key(s) from chrome.storage.local`);
+      }
+    } catch (error) {
+      logger.error('Error cleaning up storage:', error);
+    }
+
+    // Send cleanup message to all content scripts to clear their zipChunks maps
+    try {
+      const tabs = await chrome.tabs.query({});
+      const cleanupPromises = tabs.map(async (tab) => {
+        if (tab.id && tab.id > 0) {
+          try {
+            await chrome.tabs.sendMessage(tab.id, {
+              action: 'cleanupZipChunks',
+              totalChunks: 1000 // Large number to ensure all chunks are cleaned
+            });
+          } catch {
+            // Ignore errors (tab might not have content script loaded)
+          }
+        }
+      });
+      await Promise.all(cleanupPromises);
+    } catch (error) {
+      logger.error('Error sending cleanup to content scripts:', error);
+    }
+
+    // Update badge if no active downloads remain
+    if (activeDownloads.size === 0) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tabs.length > 0 && tabs[0].windowId) {
+          await updateManifestCountBadge(tabs[0].windowId);
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    const response: CleanupDownloadsResponse = {
+      canceled: canceledCount,
+      storageKeysCleaned
+    };
+    sendResponse(response);
+    logger.log(`Cleanup complete: ${canceledCount} download(s) canceled, ${storageKeysCleaned} storage key(s) cleaned`);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('Error during cleanup:', errorMessage);
+    sendResponse({ error: errorMessage });
+  }
 }
 
 /**
@@ -1003,6 +1100,13 @@ chrome.runtime.onMessage.addListener((
 
     case 'getCurrentTab':
       handleGetCurrentTab(sendResponse);
+      return true;
+
+    case 'cleanupDownloads':
+      handleCleanupDownloads(message as CleanupDownloadsMessage, sendResponse).catch((error) => {
+        logger.error('Error in handleCleanupDownloads:', error);
+        sendResponse({ error: error instanceof Error ? error.message : 'Unknown error' });
+      });
       return true;
 
     default:
@@ -1820,6 +1924,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   const downloadStartTime = Date.now();
   let lastUpdateTime = downloadStartTime;
   let lastDownloadedBytes = 0;
+  let lastProgressUpdateTime = downloadStartTime;
+  const PROGRESS_UPDATE_INTERVAL_MS = 100; // Throttle progress updates to every 100ms
 
   // Track failed segments for retry
   const failedInitSegments: string[] = [];
@@ -1836,9 +1942,11 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   });
 
   // Download segments in batches
+  logger.groupCollapsed(`📦 Downloading ${total} segments...`);
   for (let i = 0; i < segmentUrls.length; i += BATCH_SIZE) {
     // Check if canceled
     if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+      logger.groupEnd();
       throw new Error('Download canceled');
     }
 
@@ -1888,7 +1996,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           lastDownloadedBytes = downloadedBytes;
         }
 
-        // Update progress
+        // Update progress (throttled to reduce overhead)
         const download = activeDownloads.get(downloadId);
         if (download) {
           download.progress = {
@@ -1900,14 +2008,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        await notifyDownloadProgress(downloadId, {
-          downloaded,
-          total,
-          status: 'downloading',
-          downloadedBytes,
-          totalBytes,
-          downloadSpeed
-        });
+
+        // Throttle progress updates to reduce overhead with parallel downloads
+        const timeSinceLastProgressUpdate = now - lastProgressUpdateTime;
+        if (timeSinceLastProgressUpdate >= PROGRESS_UPDATE_INTERVAL_MS || downloaded === total) {
+          await notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          });
+          lastProgressUpdateTime = now;
+        }
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           throw error;
@@ -1919,10 +2033,11 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
       }
     }));
   }
+  logger.groupEnd();
 
   // Retry failed init segments
   if (failedInitSegments.length > 0) {
-    logger.log(` Retrying ${failedInitSegments.length} failed init segment(s)...`);
+    logger.groupCollapsed(`🔄 Retrying ${failedInitSegments.length} failed init segment(s)...`);
     for (const url of failedInitSegments) {
       if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
         throw new Error('Download canceled');
@@ -1967,7 +2082,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           lastDownloadedBytes = downloadedBytes;
         }
 
-        // Update progress
+        // Update progress (throttled to reduce overhead)
         const download = activeDownloads.get(downloadId);
         if (download) {
           download.progress = {
@@ -1979,14 +2094,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        await notifyDownloadProgress(downloadId, {
-          downloaded,
-          total,
-          status: 'downloading',
-          downloadedBytes,
-          totalBytes,
-          downloadSpeed
-        });
+
+        // Throttle progress updates to reduce overhead with parallel downloads
+        const timeSinceLastProgressUpdate = now - lastProgressUpdateTime;
+        if (timeSinceLastProgressUpdate >= PROGRESS_UPDATE_INTERVAL_MS || downloaded === total) {
+          await notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          });
+          lastProgressUpdateTime = now;
+        }
 
         logger.log(` Successfully retried init segment: ${fileName}`);
       } catch (error) {
@@ -1995,11 +2116,12 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         throw new Error(`Failed to download initialization segment after retry: ${errorMessage}`);
       }
     }
+    logger.groupEnd();
   }
 
   // Retry failed regular segments
   if (failedSegments.length > 0) {
-    logger.log(` Retrying ${failedSegments.length} failed segment(s)...`);
+    logger.groupCollapsed(`🔄 Retrying ${failedSegments.length} failed segment(s)...`);
 
     // Retry failed segments in smaller batches
     for (let i = 0; i < failedSegments.length; i += RETRY_BATCH_SIZE) {
@@ -2054,7 +2176,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
           lastDownloadedBytes = downloadedBytes;
         }
 
-        // Update progress
+        // Update progress (throttled to reduce overhead)
         const download = activeDownloads.get(downloadId);
         if (download) {
           download.progress = {
@@ -2066,14 +2188,20 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             downloadSpeed
           };
         }
-        await notifyDownloadProgress(downloadId, {
-          downloaded,
-          total,
-          status: 'downloading',
-          downloadedBytes,
-          totalBytes,
-          downloadSpeed
-        });
+
+        // Throttle progress updates to reduce overhead with parallel downloads
+        const timeSinceLastProgressUpdate = now - lastProgressUpdateTime;
+        if (timeSinceLastProgressUpdate >= PROGRESS_UPDATE_INTERVAL_MS || downloaded === total) {
+          await notifyDownloadProgress(downloadId, {
+            downloaded,
+            total,
+            status: 'downloading',
+            downloadedBytes,
+            totalBytes,
+            downloadSpeed
+          });
+          lastProgressUpdateTime = now;
+        }
 
         logger.log(` Successfully retried segment: ${fileName}`);
         } catch (error) {
@@ -2088,6 +2216,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
         }
       }));
     }
+    logger.groupEnd();
   }
 
   // Check if canceled before creating zip
