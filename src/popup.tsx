@@ -638,6 +638,13 @@ const Popup = () => {
               onClose={() => setSpeedDialOpen(false)}
               onOpen={() => setSpeedDialOpen(true)}
               open={speedDialOpen}
+              sx={{
+                '& .MuiSpeedDial-fab': {
+                  width: 40,
+                  height: 40,
+                  minWidth: 40,
+                },
+              }}
             >
               {speedDialActions.map((action) => (
                 <SpeedDialAction
