@@ -13,8 +13,6 @@ import { createRoot } from 'react-dom/client';
 import { ThemeProvider } from '@mui/material/styles';
 import { appTheme } from './themes';
 import CssBaseline from '@mui/material/CssBaseline';
-import Button from '@mui/material/Button';
-import LinearProgress from '@mui/material/LinearProgress';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -27,10 +25,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import BlockIcon from '@mui/icons-material/Block';
 import SettingsIcon from '@mui/icons-material/Settings';
-import CloseIcon from '@mui/icons-material/Close';
-import CancelIcon from '@mui/icons-material/Cancel';
 import Chip from '@mui/material/Chip';
-import Link from '@mui/material/Link';
 import Alert from '@mui/material/Alert';
 import Pagination from '@mui/material/Pagination';
 import type {
@@ -45,10 +40,6 @@ import type {
   ManifestCapturedMessage,
   PreviewUpdatedMessage,
   M3U8FetchErrorMessage,
-  DownloadProgress,
-  PreviewImageProps,
-  ManifestItemProps,
-  ProgressBarProps,
   AddToIgnoreListMessage,
   DownloadState,
   CleanupDownloadsMessage,
@@ -56,272 +47,13 @@ import type {
 } from './types';
 import { logger } from './utils/logger';
 import {
-  formatBytes,
-  formatSpeed,
-  formatDuration,
   extractFilenameFromUrl,
-  formatPageUrl,
   groupManifestsByDomain
 } from './utils/popup';
-import type { DomainGroup } from './types';
+import { ManifestItem } from './components/ManifestItem';
 
 // CRITICAL: This should appear in console immediately when script loads
 logger.log('popup.tsx loaded - script is executing');
-
-
-/**
- * Component for displaying and cycling through preview images on hover.
- */
-const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const intervalRef = useRef<number | null>(null);
-  const previewDivRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const div = previewDivRef.current;
-    if (!div || previewUrls.length <= 1) return;
-
-    const handleMouseEnter = () => {
-      if (intervalRef.current !== null) return; // Already cycling
-
-      intervalRef.current = window.setInterval(() => {
-        setCurrentIndex((prev) => (prev + 1) % previewUrls.length);
-      }, 1000);
-    };
-
-    const handleMouseLeave = () => {
-      if (intervalRef.current !== null) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      setCurrentIndex(0);
-    };
-
-    div.addEventListener('mouseenter', handleMouseEnter);
-    div.addEventListener('mouseleave', handleMouseLeave);
-
-    return () => {
-      div.removeEventListener('mouseenter', handleMouseEnter);
-      div.removeEventListener('mouseleave', handleMouseLeave);
-      if (intervalRef.current !== null) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [previewUrls]);
-
-  if (!previewUrls || previewUrls.length === 0) {
-    return null;
-  }
-
-  return (
-    <Box
-      ref={previewDivRef}
-      className="preview-image-container"
-    >
-      <img
-        src={previewUrls[currentIndex]}
-        alt="Video preview"
-        className="preview-image"
-        onError={(e) => {
-          logger.error('Preview image failed to load');
-          (e.target as HTMLImageElement).classList.add('hidden');
-        }}
-      />
-    </Box>
-  );
-};
-
-/**
- * Component for displaying a single manifest item.
- */
-const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, onCancel, isCompleted }: ManifestItemProps & { isCompleted: boolean }) => {
-  const date = new Date(manifest.capturedAt);
-  const timeStr = date.toLocaleTimeString();
-  const displayTitle = manifest.title || manifest.fileName;
-  const formattedPageUrl = formatPageUrl(manifest.pageUrl);
-
-  const infoParts: string[] = [];
-
-  if (manifest.resolution) {
-    infoParts.push(`${manifest.resolution.width}×${manifest.resolution.height}`);
-  }
-
-  if (manifest.duration) {
-    infoParts.push(formatDuration(manifest.duration));
-  }
-
-  infoParts.push(`${manifest.segmentCount} segments`);
-  infoParts.push(`Captured at ${timeStr}`);
-
-  const infoText = infoParts.join(' • ');
-
-  const percent = downloadProgress ? Math.round((downloadProgress.downloaded / downloadProgress.total) * 100) : 0;
-  const isCanceled = downloadProgress?.status === 'canceled';
-  const isActive = downloadProgress && downloadProgress.status !== 'complete' && !isCanceled;
-
-  let progressInfoText = 'Starting download...';
-  if (downloadProgress) {
-    if (downloadProgress.status === 'creating_zip') {
-      if (downloadProgress.zipSize) {
-        progressInfoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
-      } else if (downloadProgress.totalBytes) {
-        progressInfoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
-      } else {
-        progressInfoText = 'Creating ZIP file...';
-      }
-    } else if (downloadProgress.status === 'downloading') {
-      const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
-      const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
-        ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
-        : '            ';
-      const size = downloadProgress.downloadedBytes !== undefined
-        ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
-        : '            ';
-      progressInfoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
-    }
-  }
-
-  return (
-    <Card className="manifest-item-card" data-manifest-id={manifest.id}>
-      <Box className="manifest-item-top-section">
-        {manifest.previewUrls && manifest.previewUrls.length > 0 && (
-          <PreviewImage previewUrls={manifest.previewUrls} />
-        )}
-        <Box className="manifest-item-content-box">
-          <Box className="manifest-item-header-box">
-            <Typography variant="subtitle2" className="manifest-item-title">
-              {displayTitle}
-            </Typography>
-            <IconButton
-              size="small"
-              onClick={() => onClear(manifest.id)}
-              className="manifest-item-close-button"
-            >
-              <CloseIcon fontSize="small" />
-            </IconButton>
-          </Box>
-          {formattedPageUrl && manifest.pageUrl && (
-            <Link
-              href={manifest.pageUrl}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                chrome.tabs.create({ url: manifest.pageUrl });
-              }}
-              className="manifest-item-page-link"
-              color="text.secondary"
-              title={manifest.pageUrl}
-            >
-              {formattedPageUrl}
-            </Link>
-          )}
-        </Box>
-      </Box>
-      <Typography variant="caption" color="text.secondary" className="manifest-item-info-text">
-        {infoText}
-      </Typography>
-      <Box className="manifest-item-actions-section">
-        {isActive && (
-          <Box className="manifest-item-progress-container-box">
-            <Box className="manifest-item-progress-bar-container">
-              <LinearProgress
-                variant="determinate"
-                value={percent}
-                color={isCanceled ? 'error' : 'primary'}
-                className="manifest-item-progress-bar"
-              />
-              {!isCanceled && (
-                <IconButton
-                  size="small"
-                  onClick={() => onCancel(manifest.id)}
-                  className="manifest-item-progress-cancel-button"
-                >
-                  <CancelIcon fontSize="small" />
-                </IconButton>
-              )}
-            </Box>
-            {!isCanceled && (
-              <Typography variant="caption" className="manifest-item-progress-info-text">
-                {progressInfoText}
-              </Typography>
-            )}
-            {isCanceled && (
-              <Typography variant="caption" className="manifest-item-progress-canceled-text">
-                Download Canceled
-              </Typography>
-            )}
-          </Box>
-        )}
-        {!isActive && (
-          <Button
-            variant={isCompleted ? 'outlined' : 'contained'}
-            size="small"
-            fullWidth
-            onClick={() => onDownload(manifest.id)}
-            className="manifest-item-download-button"
-          >
-            {isCompleted ? 'Zip Downloaded' : 'Download ZIP'}
-          </Button>
-        )}
-      </Box>
-    </Card>
-  );
-};
-
-/**
- * Component for displaying download progress (legacy, kept for compatibility but not used in new UI).
- */
-const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
-  if (!progress) {
-    return null;
-  }
-
-  // Don't show progress bar for completed or canceled downloads
-  if (progress.status === 'complete' || progress.status === 'canceled') {
-    return null;
-  }
-
-  const percent = Math.round((progress.downloaded / progress.total) * 100);
-
-  let infoText = 'Starting download...';
-
-  if (progress.status === 'creating_zip') {
-    if (progress.zipSize) {
-      infoText = `Created ${formatBytes(progress.zipSize)} zip file`;
-    } else if (progress.totalBytes) {
-      infoText = `Compressing ${formatBytes(progress.totalBytes)} into zip archive...`;
-    } else {
-      infoText = 'Creating ZIP file...';
-    }
-  } else if (progress.status === 'downloading') {
-    const segments = `${progress.downloaded}/${progress.total}`.padEnd(10);
-    const speed = progress.downloadSpeed && progress.downloadSpeed > 0
-      ? formatSpeed(progress.downloadSpeed).padEnd(12)
-      : '            ';
-    const size = progress.downloadedBytes !== undefined
-      ? formatBytes(progress.downloadedBytes).padEnd(12)
-      : '            ';
-    infoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
-  }
-
-  return (
-    <Box className="manifest-item-progress-container-box">
-      <Box className="manifest-item-progress-bar-container">
-        <LinearProgress
-          variant="determinate"
-          value={percent}
-          className="manifest-item-progress-bar"
-        />
-        <IconButton size="small" onClick={onCancel} className="manifest-item-progress-cancel-button">
-          <CancelIcon fontSize="small" />
-        </IconButton>
-      </Box>
-      <Typography variant="caption" className="manifest-item-progress-info-text">
-        {infoText}
-      </Typography>
-    </Box>
-  );
-};
 
 /**
  * Main Popup component.
@@ -611,99 +343,118 @@ const Popup = () => {
     });
   }, [updateStatus]);
 
+  // Handle download progress message
+  const handleDownloadProgress = useCallback((progressMessage: DownloadProgressMessage) => {
+    // Update progress for the specific manifest
+    setDownloads((prev) => {
+      const newDownloads = new Map(prev);
+
+      // Use manifestId from the message
+      if (progressMessage.manifestId) {
+        newDownloads.set(progressMessage.manifestId, {
+          downloadId: progressMessage.downloadId,
+          progress: {
+            downloaded: progressMessage.downloaded,
+            total: progressMessage.total,
+            status: progressMessage.status,
+            downloadedBytes: progressMessage.downloadedBytes,
+            totalBytes: progressMessage.totalBytes,
+            downloadSpeed: progressMessage.downloadSpeed,
+            zipSize: progressMessage.zipSize
+          }
+        });
+
+        // Clear progress after completion
+        if (progressMessage.status === 'complete' || progressMessage.status === 'canceled') {
+          if (progressMessage.status === 'complete') {
+            // Mark this manifest as having completed download
+            setCompletedDownloads((prev) => {
+              const updated = new Set(prev);
+              updated.add(progressMessage.manifestId);
+              return updated;
+            });
+          } else {
+            // Remove from completed set if canceled
+            setCompletedDownloads((prev) => {
+              const updated = new Set(prev);
+              updated.delete(progressMessage.manifestId);
+              return updated;
+            });
+          }
+          setTimeout(() => {
+            setDownloads((current) => {
+              const updated = new Map(current);
+              updated.delete(progressMessage.manifestId);
+              return updated;
+            });
+          }, 2000);
+        }
+      }
+
+      return newDownloads;
+    });
+  }, []);
+
+  // Handle download error message
+  const handleDownloadError = useCallback((errorMessage: DownloadErrorMessage) => {
+    setError(errorMessage.error || 'Download failed');
+
+    // Remove the failed download - we need to find which manifest it belongs to
+    setDownloads((prev) => {
+      const newDownloads = new Map(prev);
+      for (const [manifestId, downloadState] of prev.entries()) {
+        if (downloadState.downloadId === errorMessage.downloadId) {
+          newDownloads.delete(manifestId);
+          break;
+        }
+      }
+      return newDownloads;
+    });
+  }, []);
+
+  // Handle manifest captured message
+  const handleManifestCaptured = useCallback((capturedMessage: ManifestCapturedMessage) => {
+    logger.log(`Manifest captured: ${capturedMessage.fileName}`);
+    // Track the most recently captured domain to bump it to top
+    // We'll get the domain from the updated status
+    updateStatus();
+  }, [updateStatus]);
+
+  // Handle preview updated message
+  const handlePreviewUpdated = useCallback((previewMessage: PreviewUpdatedMessage) => {
+    logger.log(`Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
+
+    // Update the specific manifest's preview URLs
+    setManifests((prev) =>
+      prev.map((m) =>
+        m.id === previewMessage.manifestId
+          ? { ...m, previewUrls: previewMessage.previewUrls }
+          : m
+      )
+    );
+  }, []);
+
+  // Handle m3u8 fetch error message
+  const handleM3U8FetchError = useCallback((fetchErrorMessage: M3U8FetchErrorMessage) => {
+    const fileName = extractFilenameFromUrl(fetchErrorMessage.url);
+    const errorMsg = `Failed to fetch ${fileName}: ${fetchErrorMessage.status} ${fetchErrorMessage.statusText || ''}`;
+    logger.error(`${errorMsg}`, fetchErrorMessage.url);
+    setError(errorMsg);
+  }, []);
+
   // Message listener
   useEffect(() => {
     const messageListener = (message: ExtensionMessage) => {
       if (message.action === 'downloadProgress') {
-        const progressMessage = message as DownloadProgressMessage;
-
-        // Update progress for the specific manifest
-        setDownloads((prev) => {
-          const newDownloads = new Map(prev);
-
-          // Use manifestId from the message
-          if (progressMessage.manifestId) {
-            newDownloads.set(progressMessage.manifestId, {
-              downloadId: progressMessage.downloadId,
-              progress: {
-                downloaded: progressMessage.downloaded,
-                total: progressMessage.total,
-                status: progressMessage.status,
-                downloadedBytes: progressMessage.downloadedBytes,
-                totalBytes: progressMessage.totalBytes,
-                downloadSpeed: progressMessage.downloadSpeed,
-                zipSize: progressMessage.zipSize
-              }
-            });
-
-            // Clear progress after completion
-            if (progressMessage.status === 'complete' || progressMessage.status === 'canceled') {
-              if (progressMessage.status === 'complete') {
-                // Mark this manifest as having completed download
-                setCompletedDownloads((prev) => {
-                  const updated = new Set(prev);
-                  updated.add(progressMessage.manifestId);
-                  return updated;
-                });
-              } else {
-                // Remove from completed set if canceled
-                setCompletedDownloads((prev) => {
-                  const updated = new Set(prev);
-                  updated.delete(progressMessage.manifestId);
-                  return updated;
-                });
-              }
-              setTimeout(() => {
-                setDownloads((current) => {
-                  const updated = new Map(current);
-                  updated.delete(progressMessage.manifestId);
-                  return updated;
-                });
-              }, 2000);
-            }
-          }
-
-          return newDownloads;
-        });
+        handleDownloadProgress(message as DownloadProgressMessage);
       } else if (message.action === 'downloadError') {
-        const errorMessage = message as DownloadErrorMessage;
-        setError(errorMessage.error || 'Download failed');
-
-        // Remove the failed download - we need to find which manifest it belongs to
-        setDownloads((prev) => {
-          const newDownloads = new Map(prev);
-          for (const [manifestId, downloadState] of prev.entries()) {
-            if (downloadState.downloadId === errorMessage.downloadId) {
-              newDownloads.delete(manifestId);
-              break;
-            }
-          }
-          return newDownloads;
-        });
+        handleDownloadError(message as DownloadErrorMessage);
       } else if (message.action === 'manifestCaptured') {
-        const capturedMessage = message as ManifestCapturedMessage;
-        logger.log(`Manifest captured: ${capturedMessage.fileName}`);
-        // Track the most recently captured domain to bump it to top
-        // We'll get the domain from the updated status
-        updateStatus();
+        handleManifestCaptured(message as ManifestCapturedMessage);
       } else if (message.action === 'previewUpdated') {
-        const previewMessage = message as PreviewUpdatedMessage;
-        logger.log(`Preview updated for manifest ${previewMessage.manifestId}: ${previewMessage.previewUrls.length} frames`);
-
-        // Update the specific manifest's preview URLs
-        setManifests((prev) =>
-          prev.map((m) =>
-            m.id === previewMessage.manifestId
-              ? { ...m, previewUrls: previewMessage.previewUrls }
-              : m
-          )
-        );
+        handlePreviewUpdated(message as PreviewUpdatedMessage);
       } else if (message.action === 'm3u8FetchError') {
-        const fetchErrorMessage = message as M3U8FetchErrorMessage;
-        const fileName = extractFilenameFromUrl(fetchErrorMessage.url);
-        const errorMsg = `Failed to fetch ${fileName}: ${fetchErrorMessage.status} ${fetchErrorMessage.statusText || ''}`;
-        logger.error(`${errorMsg}`, fetchErrorMessage.url);
-        setError(errorMsg);
+        handleM3U8FetchError(message as M3U8FetchErrorMessage);
       }
     };
 
@@ -712,7 +463,7 @@ const Popup = () => {
     return () => {
       chrome.runtime.onMessage.removeListener(messageListener);
     };
-  }, [updateStatus]);
+  }, [handleDownloadProgress, handleDownloadError, handleManifestCaptured, handlePreviewUpdated, handleM3U8FetchError]);
 
   // Initial load and periodic updates
   useEffect(() => {
