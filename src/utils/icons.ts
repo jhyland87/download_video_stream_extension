@@ -40,7 +40,7 @@ export function getIconType(progress: DownloadProgress | null, zipGenerated: boo
     return 'default';
   }
 
-  if (progress.status === 'complete' || progress.status === 'cancelled') {
+  if (progress.status === 'complete' || progress.status === 'canceled') {
     return 'default';
   }
 

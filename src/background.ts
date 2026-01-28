@@ -26,6 +26,14 @@ import type {
   ManifestSummaryWithDedupKeys,
   WebRequestBodyDetailsWithTabId,
   WebRequestBodyDetailsWithHeaders,
+  DownloadTotals,
+  ZipNamingInfo,
+  SegmentMappings,
+  FolderAndFilename,
+  VideoResolution,
+  Manifest,
+  DownloadProgress,
+  ActiveDownload,
 } from './types';
 import { logger } from './utils/logger';
 import { getIconType, getIconPaths } from './utils/icons';
@@ -1107,7 +1115,7 @@ function extractBaseFilename(url: string, defaultName: string = 'segment.ts'): s
  * @param url - The URL to extract from
  * @returns Object with folderName (may be empty) and segmentName, both sanitized to ASCII only
  */
-function extractFolderAndFilename(url: string): { folderName: string; segmentName: string; defaultName?: string } {
+function extractFolderAndFilename(url: string): FolderAndFilename {
   const defaultName = 'segment.ts';
   let segmentName: string;
   let folderName: string;
@@ -1240,7 +1248,7 @@ function parseM3U8(content: string, baseUrl: string): string[] {
  * @param content - The m3u8 file content as a string
  * @returns Video resolution if found, undefined otherwise
  */
-function parseResolution(content: string): { width: number; height: number } | undefined {
+function parseResolution(content: string): VideoResolution | undefined {
   const lines = content.split('\n');
 
   for (let i = 0; i < lines.length; i++) {
@@ -1572,7 +1580,7 @@ async function startDownload(manifestId: string, format: DownloadFormat): Promis
   activeDownloads.set(downloadId, {
     manifestId,
     format,
-    cancelled: false,
+    canceled: false,
     abortController,
     progress: { downloaded: 0, total: 0, status: 'starting' },
     windowId: currentWindowId
@@ -1597,18 +1605,18 @@ async function startDownload(manifestId: string, format: DownloadFormat): Promis
 
 /**
  * Cancels an ongoing download.
- * Marks download as cancelled, aborts fetch requests, and removes from active downloads.
+ * Marks download as canceled, aborts fetch requests, and removes from active downloads.
  * @param downloadId - The ID of the download to cancel
  */
 async function cancelDownload(downloadId: string): Promise<void> {
   const download = activeDownloads.get(downloadId);
   if (download) {
-    download.cancelled = true;
+    download.canceled = true;
     download.abortController.abort();
     await notifyDownloadProgress(downloadId, {
       downloaded: download.progress.downloaded,
       total: download.progress.total,
-      status: 'cancelled'
+      status: 'canceled'
     });
     activeDownloads.delete(downloadId);
     // Restore manifest count badge if no active downloads remain
@@ -1645,6 +1653,117 @@ function sanitizeFilename(name: string, maxLength: number = 200): string {
 }
 
 /**
+ * Build naming information for the ZIP and MP4 output files from a manifest.
+ */
+function buildZipNamingInfo(manifest: Manifest): ZipNamingInfo {
+  const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  const videoBaseName = manifest.title
+    ? sanitizeFilename(manifest.title)
+    : (m3u8FileName.replace('.m3u8', '') || 'output');
+
+  const outputFileName = `${videoBaseName}-${timestamp}.mp4`;
+
+  return { m3u8FileName, timestamp, videoBaseName, outputFileName };
+}
+
+/**
+ * Create segment URL-to-filename mappings and cleanup string for the compile script.
+ */
+function buildSegmentMappings(segmentUrls: string[], initSegmentUrls: string[]): SegmentMappings {
+  const segmentUrlToFilename = createUrlToFilenameMap(segmentUrls, 'segment.ts');
+  const initSegmentUrlToFilename = createUrlToFilenameMap(initSegmentUrls, 'init.mp4');
+
+  const allSegmentFilenames: string[] = [];
+  for (const filename of segmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+  for (const filename of initSegmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+
+  const segmentFilesCleanup = allSegmentFilenames.length > 0
+    ? allSegmentFilenames.map((filename) => `"${filename}"`).join(' ')
+    : '';
+
+  return {
+    segmentUrlToFilename,
+    initSegmentUrlToFilename,
+    allSegmentFilenames,
+    segmentFilesCleanup
+  };
+}
+
+/**
+ * Load the compile_video.sh template and add it to the ZIP with placeholders replaced.
+ */
+async function addCompileScriptToZip(
+  zip: InstanceType<typeof JSZip>,
+  naming: ZipNamingInfo,
+  segmentFilesCleanup: string
+): Promise<void> {
+  const templateUrl = chrome.runtime.getURL('templates/compile_video.sh.template');
+  const templateResponse = await fetch(templateUrl);
+  if (!templateResponse.ok) {
+    throw new Error(`Failed to load template: ${templateResponse.status}`);
+  }
+  let bashScriptContent = await templateResponse.text();
+
+  bashScriptContent = bashScriptContent
+    .replace('{{MANIFEST_FILE}}', naming.m3u8FileName)
+    .replace('{{OUTPUT_FILE}}', naming.outputFileName)
+    .replace('{{SEGMENT_FILES}}', segmentFilesCleanup);
+
+  zip.file('compile_video.sh', bashScriptContent);
+}
+
+/**
+ * Initialize download totals used for progress tracking.
+ */
+function createDownloadTotals(total: number): DownloadTotals {
+  const downloadStartTime = Date.now();
+  return {
+    total,
+    downloaded: 0,
+    downloadedBytes: 0,
+    totalBytes: undefined,
+    downloadStartTime,
+    lastUpdateTime: downloadStartTime,
+    lastDownloadedBytes: 0
+  };
+}
+
+/**
+ * Update shared totals and notify listeners about progress.
+ */
+async function updateDownloadProgress(
+  downloadId: string,
+  totals: DownloadTotals,
+  status: DownloadProgress['status']
+): Promise<void> {
+  const download = activeDownloads.get(downloadId);
+  if (download) {
+    download.progress = {
+      downloaded: totals.downloaded,
+      total: totals.total,
+      status,
+      downloadedBytes: totals.downloadedBytes,
+      totalBytes: totals.totalBytes,
+      downloadSpeed: 0 // downloadSpeed is calculated by the caller when needed
+    };
+  }
+  await notifyDownloadProgress(downloadId, {
+    downloaded: totals.downloaded,
+    total: totals.total,
+    status,
+    downloadedBytes: totals.downloadedBytes,
+    totalBytes: totals.totalBytes,
+    downloadSpeed: download?.progress.downloadSpeed
+  });
+}
+
+/**
  * Downloads video segments and packages them into a ZIP file.
  * Downloads segments in batches, creates ZIP archive, and triggers browser download.
  * @param downloadId - Unique identifier for this download
@@ -1657,96 +1776,48 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     throw new Error('JSZip library not loaded');
   }
 
-  // Get windowId from the download
   const download = activeDownloads.get(downloadId);
   const windowId = download?.windowId ?? null;
 
   const zip = new JSZip();
 
-  // Extract m3u8 filename (used for ZIP file and bash script)
-  const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
+  const naming = buildZipNamingInfo(manifest);
 
-  // Generate timestamp once - will be used for both ZIP and MP4 filenames
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-
-  // Use title if available, otherwise fall back to m3u8 filename
-  const videoBaseName = manifest.title
-    ? sanitizeFilename(manifest.title)
-    : (m3u8FileName.replace('.m3u8', '') || 'output');
-
-  // MP4 filename (uses same timestamp as ZIP)
-  const outputFileName = `${videoBaseName}-${timestamp}.mp4`;
-
-  // Parse m3u8 to get segment URLs first (needed for template replacement)
   const segmentUrls = parseM3U8(manifest.m3u8Content, manifest.m3u8Url);
-
   if (segmentUrls.length === 0) {
     throw new Error('No segments found in m3u8 file');
   }
 
-  // Parse m3u8 to get initialization segment URLs from #EXT-X-MAP tags
   const initSegmentUrls = parseInitSegments(manifest.m3u8Content, manifest.m3u8Url);
   logger.log(` Found ${initSegmentUrls.length} initialization segment(s)`);
 
-  // Create URL-to-filename mappings for both regular segments and init segments
-  // Only applies unique naming when filenames are duplicated
-  const segmentUrlToFilename = createUrlToFilenameMap(segmentUrls, 'segment.ts');
-  const initSegmentUrlToFilename = createUrlToFilenameMap(initSegmentUrls, 'init.mp4');
+  const mappings = buildSegmentMappings(segmentUrls, initSegmentUrls);
+  const segmentUrlToFilename = mappings.segmentUrlToFilename;
+  const initSegmentUrlToFilename = mappings.initSegmentUrlToFilename;
 
-  // Collect all segment filenames for safe cleanup in bash script
-  const allSegmentFilenames: string[] = [];
-  for (const filename of segmentUrlToFilename.values()) {
-    allSegmentFilenames.push(filename);
-  }
-  for (const filename of initSegmentUrlToFilename.values()) {
-    allSegmentFilenames.push(filename);
-  }
+  await addCompileScriptToZip(zip, naming, mappings.segmentFilesCleanup);
 
-  // Build safe cleanup command - explicit filenames instead of wildcards
-  // Quote each filename to handle spaces/special characters safely
-  const segmentFilesCleanup = allSegmentFilenames.length > 0
-    ? allSegmentFilenames.map(filename => `"${filename}"`).join(' ')
-    : '';
-
-  // Load template from file at runtime
-  const templateUrl = chrome.runtime.getURL('templates/compile_video.sh.template');
-  const templateResponse = await fetch(templateUrl);
-  if (!templateResponse.ok) {
-    throw new Error(`Failed to load template: ${templateResponse.status}`);
-  }
-  let bashScriptContent = await templateResponse.text();
-
-  // Replace template placeholders with actual values
-  bashScriptContent = bashScriptContent
-    .replace('{{MANIFEST_FILE}}', m3u8FileName)
-    .replace('{{OUTPUT_FILE}}', outputFileName)
-    .replace('{{SEGMENT_FILES}}', segmentFilesCleanup);
-
-  zip.file('compile_video.sh', bashScriptContent);
-
-  // Log mapping for debugging
-  logger.log(` Created mapping for ${segmentUrlToFilename.size} regular segments and ${initSegmentUrlToFilename.size} init segments`);
+  logger.log(` Created mapping for ${mappings.segmentUrlToFilename.size} regular segments and ${mappings.initSegmentUrlToFilename.size} init segments`);
   if (segmentUrls.length > 0) {
     const firstUrl = segmentUrls[0];
-    const firstFilename = segmentUrlToFilename.get(firstUrl);
+    const firstFilename = mappings.segmentUrlToFilename.get(firstUrl);
     logger.log(` Sample mapping: ${firstUrl.substring(0, 80)}... -> ${firstFilename}`);
   }
 
-  // Combine mappings for m3u8 modification
-  const allUrlToFilename = new Map<string, string>([...segmentUrlToFilename, ...initSegmentUrlToFilename]);
+  const allUrlToFilename = new Map<string, string>([
+    ...mappings.segmentUrlToFilename,
+    ...mappings.initSegmentUrlToFilename
+  ]);
 
-  // Now modify m3u8 content to use the mapped filenames
   const modifiedM3U8Content = modifyM3U8ForLocalFiles(manifest.m3u8Content, manifest.m3u8Url, allUrlToFilename);
-
-  // Add m3u8 file to ZIP
-  zip.file(m3u8FileName, modifiedM3U8Content);
+  zip.file(naming.m3u8FileName, modifiedM3U8Content);
 
   // Total includes both regular segments and init segments
   const total = segmentUrls.length + initSegmentUrls.length;
   let downloaded = 0;
   let downloadedBytes = 0;
   let totalBytes: number | undefined;
-  let downloadStartTime = Date.now();
+  const downloadStartTime = Date.now();
   let lastUpdateTime = downloadStartTime;
   let lastDownloadedBytes = 0;
 
@@ -1764,95 +1835,17 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     downloadSpeed: 0
   });
 
-  // Download initialization segments first (if any)
-  if (initSegmentUrls.length > 0) {
-    logger.log('[Stream Video Saver] Downloading initialization segments...');
-    for (const url of initSegmentUrls) {
-      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-        throw new Error('Download cancelled');
-      }
-
-      try {
-        const response = await fetch(url, { signal });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const blob = await response.blob();
-        const blobSize = blob.size;
-        downloadedBytes += blobSize;
-
-        // Use the filename from the mapping (handles duplicates automatically)
-        const fileName = initSegmentUrlToFilename.get(url);
-        if (!fileName) {
-          logger.error(` ERROR: No filename found in mapping for init segment URL: ${url}`);
-          throw new Error(`Could not get filename from init segment URL mapping for: ${url.substring(0, 100)}`);
-        }
-
-        // Validate filename is not empty
-        if (!fileName || fileName.trim().length === 0) {
-          logger.error(` ERROR: Empty filename for init segment URL: ${url}`);
-          throw new Error(`Sanitization resulted in empty filename for: ${url.substring(0, 100)}`);
-        }
-
-        // Convert blob to ArrayBuffer for better memory efficiency with large files
-        const arrayBuffer = await blob.arrayBuffer();
-        zip.file(fileName, arrayBuffer, { binary: true });
-        logger.log(` Added init segment to ZIP: ${fileName} (${blobSize} bytes)`);
-        downloaded++;
-
-        // Calculate download speed
-        const now = Date.now();
-        const timeDelta = (now - lastUpdateTime) / 1000; // seconds
-        let downloadSpeed = 0;
-        if (timeDelta > 0) {
-          const bytesDelta = downloadedBytes - lastDownloadedBytes;
-          downloadSpeed = bytesDelta / timeDelta; // bytes per second
-          lastUpdateTime = now;
-          lastDownloadedBytes = downloadedBytes;
-        }
-
-        // Update progress
-        const download = activeDownloads.get(downloadId);
-        if (download) {
-          download.progress = {
-            downloaded,
-            total,
-            status: 'downloading',
-            downloadedBytes,
-            totalBytes,
-            downloadSpeed
-          };
-        }
-        await notifyDownloadProgress(downloadId, {
-          downloaded,
-          total,
-          status: 'downloading',
-          downloadedBytes,
-          totalBytes,
-          downloadSpeed
-        });
-
-        logger.log(` Downloaded init segment: ${fileName}`);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        logger.error(` Failed to download init segment ${url}:`, errorMessage);
-        // Track failed segment for retry instead of throwing immediately
-        failedInitSegments.push(url);
-      }
-    }
-  }
-
   // Download segments in batches
   for (let i = 0; i < segmentUrls.length; i += BATCH_SIZE) {
-    // Check if cancelled
-    if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-      throw new Error('Download cancelled');
+    // Check if canceled
+    if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+      throw new Error('Download canceled');
     }
 
     const batch = segmentUrls.slice(i, i + BATCH_SIZE);
 
     await Promise.all(batch.map(async (url) => {
-      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+      if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
         return;
       }
 
@@ -1931,8 +1924,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
   if (failedInitSegments.length > 0) {
     logger.log(` Retrying ${failedInitSegments.length} failed init segment(s)...`);
     for (const url of failedInitSegments) {
-      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-        throw new Error('Download cancelled');
+      if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+        throw new Error('Download canceled');
       }
 
       try {
@@ -2010,15 +2003,15 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
 
     // Retry failed segments in smaller batches
     for (let i = 0; i < failedSegments.length; i += RETRY_BATCH_SIZE) {
-      // Check if cancelled
-      if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-        throw new Error('Download cancelled');
+      // Check if canceled
+      if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+        throw new Error('Download canceled');
       }
 
       const batch = failedSegments.slice(i, i + RETRY_BATCH_SIZE);
 
       await Promise.all(batch.map(async (url) => {
-        if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
+        if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
           return;
         }
 
@@ -2097,9 +2090,9 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     }
   }
 
-  // Check if cancelled before creating zip
-  if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-    throw new Error('Download cancelled');
+  // Check if canceled before creating zip
+  if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+    throw new Error('Download canceled');
   }
 
   // Calculate total bytes downloaded (approximation based on downloaded blobs)
@@ -2164,24 +2157,19 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     zipSize
   }, true); // zipGenerated = true
 
-  // Check if cancelled after ZIP generation
-  if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-    throw new Error('Download cancelled');
+  // Check if canceled after ZIP generation
+  if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+    throw new Error('Download canceled');
   }
 
   // Chrome has a ~2MB limit for data URLs, so for large files we need a different approach
   // For files > 50MB, we'll use a content script to create a Blob URL
   const MAX_DATA_URL_SIZE = 50 * 1024 * 1024; // 50MB limit for data URLs
 
-  // Use the same timestamp that was used for the MP4 filename in the bash script
-  // This ensures ZIP and MP4 have matching timestamps
-  // Note: timestamp is already defined earlier in the function (line 1156)
-  const zipBaseName = manifest.title
-    ? sanitizeFilename(manifest.title)
-    : (manifest.m3u8FileName.replace('.m3u8', '') || 'video');
-
-  // Use the same timestamp variable that was used for outputFileName
-  const zipFileName = `${zipBaseName}-${timestamp}.zip`;
+  // Use the same base name and timestamp that were used for the MP4 filename
+  // so ZIP and MP4 have matching names.
+  const zipBaseName = naming.videoBaseName;
+  const zipFileName = `${zipBaseName}-${naming.timestamp}.zip`;
 
   if (zipSize > MAX_DATA_URL_SIZE) {
     // For large files, send chunks via sendMessage to content script
@@ -2423,8 +2411,8 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
     try {
       for (let i = 0; i < bytes.length; i += chunkSize) {
         // Check for cancellation periodically during conversion
-        if (signal.aborted || activeDownloads.get(downloadId)?.cancelled) {
-          throw new Error('Download cancelled');
+        if (signal.aborted || activeDownloads.get(downloadId)?.canceled) {
+          throw new Error('Download canceled');
         }
 
         const chunk = bytes.subarray(i, i + chunkSize);
@@ -2732,7 +2720,7 @@ async function updateIcon(progress: DownloadProgress | null, zipGenerated: boole
       ? { tabId: activeTabId, path: iconPaths }
       : { path: iconPaths };
 
-    logger.log(`🖼️ Updating icon to: ${iconType}`, iconPaths);
+    logger.debug(`🖼️ Updating icon to: ${iconType}`, iconPaths);
     await chrome.action.setIcon(iconOptions);
   } catch (error) {
     logger.error(`Error setting icon:`, error);
@@ -2758,8 +2746,8 @@ async function updateBadge(progress: DownloadProgress, zipGenerated: boolean = f
   // Update icon based on download state
   await updateIcon(progress, zipGenerated, activeTabId);
 
-  if (progress.status === 'complete' || progress.status === 'cancelled') {
-    // Clear badge when download is complete or cancelled
+  if (progress.status === 'complete' || progress.status === 'canceled') {
+    // Clear badge when download is complete or canceled
     await chrome.action.setBadgeText({ text: '', ...badgeOptions });
     await chrome.action.setBadgeBackgroundColor({ color: [135, 206, 235, 128], ...badgeOptions }); // Light blue with 50% transparency
   } else if (hasError) {
@@ -2802,8 +2790,8 @@ async function notifyDownloadProgress(downloadId: string, progress: DownloadProg
   // Update extension badge for this tab
   await updateBadge(progress, zipGenerated, false, tabId);
 
-  // If download is complete or cancelled, restore manifest count badge
-  if (progress.status === 'complete' || progress.status === 'cancelled') {
+  // If download is complete or canceled, restore manifest count badge
+  if (progress.status === 'complete' || progress.status === 'canceled') {
     await updateManifestCountBadge();
   }
 

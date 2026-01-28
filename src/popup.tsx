@@ -160,49 +160,56 @@ const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, onCance
         <div className="manifest-item-info">{infoText}</div>
       </div>
       <div className="manifest-item-actions">
-        {downloadProgress && downloadProgress.status !== 'complete' && downloadProgress.status !== 'cancelled' ? (
+        {downloadProgress && downloadProgress.status !== 'complete' ? (
           <div className="manifest-item-progress-container">
             <div className="manifest-item-progress-wrapper">
               <div className="manifest-item-progress-bar">
                 <div
-                  className="manifest-item-progress-fill"
+                  className={`manifest-item-progress-fill ${downloadProgress.status === 'canceled' ? 'canceled' : ''}`}
                   style={{ width: `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%` }}
                 >
-                  {Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%
+                  {downloadProgress.status !== 'canceled' && (Math.round((downloadProgress.downloaded / downloadProgress.total) * 100) + '%')}
                 </div>
+                {downloadProgress.status === 'canceled' && (
+                  <div className="manifest-item-progress-canceled-text">Download Canceled</div>
+                )}
               </div>
-              <div className="manifest-item-progress-info">
-                {(() => {
-                  let infoText = 'Starting download...';
-                  if (downloadProgress.status === 'creating_zip') {
-                    if (downloadProgress.zipSize) {
-                      infoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
-                    } else if (downloadProgress.totalBytes) {
-                      infoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
-                    } else {
-                      infoText = 'Creating ZIP file...';
+              {downloadProgress.status !== 'canceled' && (
+                <div className="manifest-item-progress-info">
+                  {(() => {
+                    let infoText = 'Starting download...';
+                    if (downloadProgress.status === 'creating_zip') {
+                      if (downloadProgress.zipSize) {
+                        infoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
+                      } else if (downloadProgress.totalBytes) {
+                        infoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
+                      } else {
+                        infoText = 'Creating ZIP file...';
+                      }
+                    } else if (downloadProgress.status === 'downloading') {
+                      const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
+                      const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
+                        ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
+                        : '            ';
+                      const size = downloadProgress.downloadedBytes !== undefined
+                        ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
+                        : '            ';
+                      infoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
                     }
-                  } else if (downloadProgress.status === 'downloading') {
-                    const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
-                    const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
-                      ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
-                      : '            ';
-                    const size = downloadProgress.downloadedBytes !== undefined
-                      ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
-                      : '            ';
-                    infoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
-                  }
-                  return infoText;
-                })()}
-              </div>
+                    return infoText;
+                  })()}
+                </div>
+              )}
             </div>
-            <button
-              className="button secondary btn-cancel-download"
-              onClick={() => onCancel(manifest.id)}
-              title="Cancel download"
-            >
-              ✕
-            </button>
+            {downloadProgress.status !== 'canceled' && (
+              <button
+                className="button secondary btn-cancel-download"
+                onClick={() => onCancel(manifest.id)}
+                title="Cancel download"
+              >
+                ✕
+              </button>
+            )}
           </div>
         ) : (
           <button
@@ -226,8 +233,8 @@ const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
     return null;
   }
 
-  // Don't show progress bar for completed or cancelled downloads
-  if (progress.status === 'complete' || progress.status === 'cancelled') {
+  // Don't show progress bar for completed or canceled downloads
+  if (progress.status === 'complete' || progress.status === 'canceled') {
     return null;
   }
 
@@ -407,7 +414,7 @@ const Popup = () => {
     // Prevent double-clicks - check if download already in progress for this manifest
     if (downloads.has(manifestId)) {
       const downloadState = downloads.get(manifestId);
-      if (downloadState && downloadState.progress.status !== 'complete' && downloadState.progress.status !== 'cancelled') {
+      if (downloadState && downloadState.progress.status !== 'complete' && downloadState.progress.status !== 'canceled') {
         logger.log(`Download already in progress for manifest ${manifestId}, ignoring duplicate click`);
         return;
       }
@@ -566,7 +573,7 @@ const Popup = () => {
             });
 
             // Clear progress after completion
-            if (progressMessage.status === 'complete' || progressMessage.status === 'cancelled') {
+            if (progressMessage.status === 'complete' || progressMessage.status === 'canceled') {
               if (progressMessage.status === 'complete') {
                 // Mark this manifest as having completed download
                 setCompletedDownloads((prev) => {
@@ -575,7 +582,7 @@ const Popup = () => {
                   return updated;
                 });
               } else {
-                // Remove from completed set if cancelled
+                // Remove from completed set if canceled
                 setCompletedDownloads((prev) => {
                   const updated = new Set(prev);
                   updated.delete(progressMessage.manifestId);

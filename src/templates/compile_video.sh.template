@@ -2,6 +2,11 @@
 # Convert m3u8 playlist to MP4 using ffmpeg
 # Usage: ./compile_video.sh
 
+CURRENT_PATH=$(realpath "$0")
+MEDIA_DIR=$(dirname "${CURRENT_PATH}")
+
+cd "${MEDIA_DIR}"
+
 MANIFEST_FILE="{{MANIFEST_FILE}}"
 OUTPUT_FILE="{{OUTPUT_FILE}}"
 EXT_MAP_FILE=$(echo "${MANIFEST_FILE}" | grep 'EXT-X-MAP:URI' | awk -F= '{print $2}' | tr -d '"')
@@ -36,4 +41,4 @@ echo
 echo "Deleting self..."
 sleep 2
 
-rm -v $0
+rm -v "$0"

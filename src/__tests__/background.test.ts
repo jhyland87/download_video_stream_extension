@@ -765,7 +765,7 @@ describe('handleGetDownloadStatus', () => {
     activeDownloads.set('download1', {
       manifestId: 'manifest1',
       format: 'zip',
-      cancelled: false,
+      canceled: false,
       abortController: new AbortController(),
       progress: { downloaded: 5, total: 10, status: 'downloading' } as DownloadProgress,
       windowId: null
@@ -773,7 +773,7 @@ describe('handleGetDownloadStatus', () => {
     activeDownloads.set('download2', {
       manifestId: 'manifest2',
       format: 'zip',
-      cancelled: false,
+      canceled: false,
       abortController: new AbortController(),
       progress: { downloaded: 0, total: 5, status: 'starting' } as DownloadProgress,
       windowId: null
@@ -810,7 +810,7 @@ describe('handleGetDownloadStatus', () => {
     activeDownloads.set('download1', {
       manifestId: 'manifest1',
       format: 'zip',
-      cancelled: false,
+      canceled: false,
       abortController: new AbortController(),
       progress: { downloaded: 0, total: 0, status: 'starting' } as DownloadProgress,
       windowId: null

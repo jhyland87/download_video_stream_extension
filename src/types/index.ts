@@ -100,7 +100,7 @@ export type DownloadFormat = 'zip';
 /**
  * Download status type
  */
-export type DownloadStatus = 'starting' | 'downloading' | 'creating_zip' | 'complete' | 'cancelled';
+export type DownloadStatus = 'starting' | 'downloading' | 'creating_zip' | 'complete' | 'canceled';
 
 /**
  * Download progress information
@@ -121,10 +121,46 @@ export interface DownloadProgress {
 export interface ActiveDownload {
   manifestId: string;
   format: DownloadFormat;
-  cancelled: boolean;
+  canceled: boolean;
   abortController: AbortController;
   progress: DownloadProgress;
   windowId: number | null; // Window ID where the download was initiated
+}
+
+/**
+ * Aggregated counters and timing information used while downloading segments.
+ * Kept as a shared structure so helper functions can update progress in a
+ * consistent, testable way.
+ */
+export interface DownloadTotals {
+  total: number;
+  downloaded: number;
+  downloadedBytes: number;
+  totalBytes?: number;
+  downloadStartTime: number;
+  lastUpdateTime: number;
+  lastDownloadedBytes: number;
+}
+
+/**
+ * Naming information used when building ZIP and output filenames.
+ */
+export interface ZipNamingInfo {
+  m3u8FileName: string;
+  timestamp: string;
+  videoBaseName: string;
+  outputFileName: string;
+}
+
+/**
+ * URL-to-filename mappings for regular and initialization segments,
+ * plus derived cleanup information for the compile script.
+ */
+export interface SegmentMappings {
+  segmentUrlToFilename: Map<string, string>;
+  initSegmentUrlToFilename: Map<string, string>;
+  allSegmentFilenames: string[];
+  segmentFilesCleanup: string;
 }
 
 /**
@@ -513,6 +549,23 @@ export type {
   RemoveFromIgnoreListMessage,
   IgnoreListResponse
 } from './ignore-list';
+
+/**
+ * Folder and filename extraction result
+ */
+export interface FolderAndFilename {
+  folderName: string;
+  segmentName: string;
+  defaultName?: string;
+}
+
+/**
+ * Minimal manifest interface for testing buildZipNamingInfo
+ */
+export interface TestManifest {
+  m3u8Url: string;
+  title?: string;
+}
 
 // Re-export type guards from guards.ts for convenience
 export {

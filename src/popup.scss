@@ -249,7 +249,7 @@ h1 {
 .manifest-item-progress-fill {
   height: 100%;
   background: #4caf50;
-  transition: width 0.3s ease;
+  transition: width 0.3s ease, background-color 0.3s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -257,6 +257,21 @@ h1 {
   font-size: 11px;
   font-weight: 600;
   min-width: 40px;
+
+  &.canceled {
+    background: #f44336;
+  }
+}
+
+.manifest-item-progress-canceled-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #000;
+  font-size: 11px;
+  font-weight: 600;
+  z-index: 1;
 }
 
 .manifest-item-progress-info {

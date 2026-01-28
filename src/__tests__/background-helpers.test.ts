@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ZipNamingInfo, SegmentMappings, FolderAndFilename, TestManifest } from '../types';
 
 /**
  * Unit tests for background script helper functions
@@ -39,7 +40,7 @@ function extractBaseFilename(url: string, defaultName: string = 'segment.ts'): s
 /**
  * Testable version of extractFolderAndFilename
  */
-function extractFolderAndFilename(url: string): { folderName: string; segmentName: string } {
+function extractFolderAndFilename(url: string): FolderAndFilename {
   const defaultName = 'segment.ts';
   let segmentName: string;
   let folderName: string;
@@ -198,7 +199,7 @@ describe('extractBaseFilename', () => {
     const result1 = extractBaseFilename('https://example.com/file🎬name.ts');
     expect(result1).not.toContain('🎬');
     expect(result1).toMatch(/^file.*name\.ts$/);
-    
+
     expect(extractBaseFilename('https://example.com/test:video.ts')).toBe('testvideo.ts');
   });
 
@@ -413,5 +414,223 @@ describe('sanitizeFilename', () => {
     expect(sanitizeFilename('')).toBe('video');
     expect(sanitizeFilename('   ')).toBe('video');
     expect(sanitizeFilename('___')).toBe('video');
+  });
+});
+
+/**
+ * Testable version of buildZipNamingInfo
+ */
+function buildZipNamingInfo(manifest: TestManifest): ZipNamingInfo {
+  const m3u8FileName = manifest.m3u8Url.substring(manifest.m3u8Url.lastIndexOf('/') + 1).split('?')[0];
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  const videoBaseName = manifest.title
+    ? sanitizeFilename(manifest.title)
+    : (m3u8FileName.replace('.m3u8', '') || 'output');
+
+  const outputFileName = `${videoBaseName}-${timestamp}.mp4`;
+
+  return { m3u8FileName, timestamp, videoBaseName, outputFileName };
+}
+
+/**
+ * Testable version of buildSegmentMappings
+ */
+function buildSegmentMappings(segmentUrls: string[], initSegmentUrls: string[]): SegmentMappings {
+  const segmentUrlToFilename = createUrlToFilenameMap(segmentUrls, 'segment.ts');
+  const initSegmentUrlToFilename = createUrlToFilenameMap(initSegmentUrls, 'init.mp4');
+
+  const allSegmentFilenames: string[] = [];
+  for (const filename of segmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+  for (const filename of initSegmentUrlToFilename.values()) {
+    allSegmentFilenames.push(filename);
+  }
+
+  const segmentFilesCleanup = allSegmentFilenames.length > 0
+    ? allSegmentFilenames.map((filename) => `"${filename}"`).join(' ')
+    : '';
+
+  return {
+    segmentUrlToFilename,
+    initSegmentUrlToFilename,
+    allSegmentFilenames,
+    segmentFilesCleanup
+  };
+}
+
+describe('buildZipNamingInfo', () => {
+  it('should extract m3u8 filename correctly', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8',
+      title: 'Test Video'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.m3u8FileName).toBe('playlist.m3u8');
+  });
+
+  it('should handle m3u8 URL with query parameters', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8?token=abc123',
+      title: 'Test Video'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.m3u8FileName).toBe('playlist.m3u8');
+  });
+
+  it('should use title when available', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8',
+      title: 'My Awesome Video'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.videoBaseName).toBe('My_Awesome_Video');
+    expect(result.outputFileName).toContain('My_Awesome_Video');
+    expect(result.outputFileName).toContain('.mp4');
+  });
+
+  it('should sanitize title correctly', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8',
+      title: 'Video: Test <File> Name'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.videoBaseName).toBe('Video_Test_File_Name');
+  });
+
+  it('should fall back to m3u8 filename when title is missing', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.videoBaseName).toBe('playlist');
+    expect(result.outputFileName).toContain('playlist');
+  });
+
+  it('should use "output" when m3u8 filename has no base name', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/.m3u8'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.videoBaseName).toBe('output');
+  });
+
+  it('should generate timestamp in correct format', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8',
+      title: 'Test'
+    };
+    const result = buildZipNamingInfo(manifest);
+    // Timestamp should be ISO format with colons and dots replaced by hyphens
+    expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
+  });
+
+  it('should include timestamp in output filename', () => {
+    const manifest = {
+      m3u8Url: 'https://example.com/video/playlist.m3u8',
+      title: 'Test Video'
+    };
+    const result = buildZipNamingInfo(manifest);
+    expect(result.outputFileName).toBe(`${result.videoBaseName}-${result.timestamp}.mp4`);
+  });
+});
+
+describe('buildSegmentMappings', () => {
+  it('should create mappings for segments and init segments', () => {
+    const segmentUrls = [
+      'https://example.com/segment1.ts',
+      'https://example.com/segment2.ts'
+    ];
+    const initSegmentUrls = [
+      'https://example.com/init.mp4'
+    ];
+    const result = buildSegmentMappings(segmentUrls, initSegmentUrls);
+
+    expect(result.segmentUrlToFilename.size).toBe(2);
+    expect(result.initSegmentUrlToFilename.size).toBe(1);
+    expect(result.allSegmentFilenames.length).toBe(3);
+  });
+
+  it('should include all filenames in allSegmentFilenames array', () => {
+    const segmentUrls = [
+      'https://example.com/segment1.ts',
+      'https://example.com/segment2.ts'
+    ];
+    const initSegmentUrls = [
+      'https://example.com/init.mp4'
+    ];
+    const result = buildSegmentMappings(segmentUrls, initSegmentUrls);
+
+    expect(result.allSegmentFilenames).toContain('segment1.ts');
+    expect(result.allSegmentFilenames).toContain('segment2.ts');
+    expect(result.allSegmentFilenames).toContain('init.mp4');
+  });
+
+  it('should create quoted cleanup string for bash script', () => {
+    const segmentUrls = [
+      'https://example.com/segment1.ts',
+      'https://example.com/segment2.ts'
+    ];
+    const initSegmentUrls = [
+      'https://example.com/init.mp4'
+    ];
+    const result = buildSegmentMappings(segmentUrls, initSegmentUrls);
+
+    expect(result.segmentFilesCleanup).toContain('"segment1.ts"');
+    expect(result.segmentFilesCleanup).toContain('"segment2.ts"');
+    expect(result.segmentFilesCleanup).toContain('"init.mp4"');
+    expect(result.segmentFilesCleanup.split(' ').length).toBe(3);
+  });
+
+  it('should handle empty arrays', () => {
+    const result = buildSegmentMappings([], []);
+
+    expect(result.segmentUrlToFilename.size).toBe(0);
+    expect(result.initSegmentUrlToFilename.size).toBe(0);
+    expect(result.allSegmentFilenames.length).toBe(0);
+    expect(result.segmentFilesCleanup).toBe('');
+  });
+
+  it('should handle only segments (no init segments)', () => {
+    const segmentUrls = [
+      'https://example.com/segment1.ts',
+      'https://example.com/segment2.ts'
+    ];
+    const result = buildSegmentMappings(segmentUrls, []);
+
+    expect(result.segmentUrlToFilename.size).toBe(2);
+    expect(result.initSegmentUrlToFilename.size).toBe(0);
+    expect(result.allSegmentFilenames.length).toBe(2);
+    expect(result.segmentFilesCleanup).toContain('"segment1.ts"');
+    expect(result.segmentFilesCleanup).toContain('"segment2.ts"');
+  });
+
+  it('should handle only init segments (no regular segments)', () => {
+    const initSegmentUrls = [
+      'https://example.com/init1.mp4',
+      'https://example.com/init2.mp4'
+    ];
+    const result = buildSegmentMappings([], initSegmentUrls);
+
+    expect(result.segmentUrlToFilename.size).toBe(0);
+    expect(result.initSegmentUrlToFilename.size).toBe(2);
+    expect(result.allSegmentFilenames.length).toBe(2);
+    expect(result.segmentFilesCleanup).toContain('"init1.mp4"');
+    expect(result.segmentFilesCleanup).toContain('"init2.mp4"');
+  });
+
+  it('should handle duplicate filenames correctly', () => {
+    const segmentUrls = [
+      'https://example.com/folder1/segment.ts',
+      'https://example.com/folder2/segment.ts'
+    ];
+    const result = buildSegmentMappings(segmentUrls, []);
+
+    expect(result.segmentUrlToFilename.size).toBe(2);
+    expect(result.allSegmentFilenames.length).toBe(2);
+    // Both should be in cleanup string
+    expect(result.segmentFilesCleanup).toContain('folder1__segment.ts');
+    expect(result.segmentFilesCleanup).toContain('folder2__segment.ts');
   });
 });
