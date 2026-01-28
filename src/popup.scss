@@ -2,10 +2,11 @@
 
 body {
   width: 350px;
-  padding: 16px;
+  padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   margin: 0;
   background: #ffffff;
+  overflow: hidden;
 }
 
 h1 {
@@ -440,6 +441,238 @@ h1 {
 
 // Progress fill dynamic width is handled inline as it's calculated dynamically
 // Image error state (handled via class)
-.manifest-preview-image.hidden {
-  display: none;
+.hidden {
+  display: none !important;
+}
+
+// MUI Component Styles - Static styles moved from sx props
+.popup-container {
+  width: 350px;
+  padding: 16px;
+}
+
+.popup-title {
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.popup-status-chip {
+  margin-bottom: 16px;
+  width: 100%;
+  justify-content: center;
+}
+
+.manifest-history-container {
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
+.empty-state-text {
+  text-align: center;
+  padding: 16px 0;
+}
+
+.domain-group-card {
+  margin-bottom: 16px;
+}
+
+.domain-group-header-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.domain-group-title-text {
+  font-weight: 600;
+}
+
+.domain-group-block-button {
+  color: #d32f2f;
+}
+
+.domain-group-content {
+  padding: 0 !important;
+  
+  // Override MUI CardContent padding (including generated class names)
+  :global(.MuiCardContent-root),
+  :global([class*="MuiCardContent-root"]) {
+    padding: 0 !important;
+    
+    &:last-child {
+      padding-bottom: 0 !important;
+    }
+  }
+}
+
+.manifest-item-card {
+  margin-bottom: 8px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.manifest-item-top-section {
+  display: flex;
+  gap: 12px;
+}
+
+.manifest-item-content-box {
+  flex: 1;
+  min-width: 0;
+}
+
+.manifest-item-actions-section {
+  width: 100%;
+  flex-basis: 100%;
+}
+
+.manifest-item-header-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.manifest-item-title {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.manifest-item-close-button {
+  margin-left: 8px;
+  padding: 4px;
+}
+
+.manifest-item-page-link {
+  font-size: 10px;
+  text-align: right;
+  display: block;
+  margin-bottom: 4px;
+  text-decoration: none;
+  
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.manifest-item-info-text {
+  display: block;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.manifest-item-progress-container-box {
+  margin-bottom: 8px;
+}
+
+.manifest-item-progress-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.manifest-item-progress-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.manifest-item-progress-cancel-button {
+  padding: 4px;
+}
+
+.manifest-item-progress-info-text {
+  font-family: monospace;
+  font-size: 10px;
+  display: block;
+}
+
+.manifest-item-progress-canceled-text {
+  font-weight: 600;
+  color: #d32f2f;
+}
+
+.manifest-item-download-button {
+  margin-top: 4px;
+}
+
+.preview-image-container {
+  flex-shrink: 0;
+  width: 120px;
+  height: 68px;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: #000;
+}
+
+.preview-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+}
+
+.error-alert {
+  margin-bottom: 16px;
+}
+
+// Speed dial container - positioned at bottom-right, peeking out from popup edge
+.speed-dial-container {
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  // Peek out about 12px (30% of 40px button) from the edge
+  transform: translate(28px, 28px);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1000;
+  
+  // Speed dial button size
+  :global(.MuiSpeedDial-fab) {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+  }
+  
+  // Fully slide out when hovering over the container itself
+  &:hover {
+    transform: translate(0, 0);
+  }
+}
+
+// Hover zone in bottom-right corner to trigger slide-out
+.popup-container {
+  position: relative;
+}
+
+// Hover zone element positioned where speed dial will be when fully visible
+.speed-dial-hover-zone {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 80px;
+  height: 80px;
+  z-index: 998;
+  cursor: pointer;
+  pointer-events: auto;
+  
+  // Slide out speed dial when hovering over the hover zone
+  &:hover ~ .speed-dial-container {
+    transform: translate(0, 0);
+  }
+}
+
+// Also slide out when hovering directly on speed dial (when it's already visible)
+.speed-dial-container:hover {
+  transform: translate(0, 0);
 }

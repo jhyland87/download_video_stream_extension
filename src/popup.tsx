@@ -10,6 +10,29 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ThemeProvider } from '@mui/material/styles';
+import { appTheme } from './themes';
+import CssBaseline from '@mui/material/CssBaseline';
+import Button from '@mui/material/Button';
+import LinearProgress from '@mui/material/LinearProgress';
+import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import IconButton from '@mui/material/IconButton';
+import SpeedDial from '@mui/material/SpeedDial';
+import SpeedDialAction from '@mui/material/SpeedDialAction';
+import SpeedDialIcon from '@mui/material/SpeedDialIcon';
+import DeleteIcon from '@mui/icons-material/Delete';
+import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
+import BlockIcon from '@mui/icons-material/Block';
+import SettingsIcon from '@mui/icons-material/Settings';
+import CloseIcon from '@mui/icons-material/Close';
+import CancelIcon from '@mui/icons-material/Cancel';
+import Chip from '@mui/material/Chip';
+import Link from '@mui/material/Link';
+import Alert from '@mui/material/Alert';
+import Pagination from '@mui/material/Pagination';
 import type {
   ManifestSummary,
   DownloadFormat,
@@ -91,17 +114,20 @@ const PreviewImage = ({ previewUrls }: PreviewImageProps) => {
   }
 
   return (
-    <div className="manifest-item-preview" ref={previewDivRef}>
+    <Box
+      ref={previewDivRef}
+      className="preview-image-container"
+    >
       <img
         src={previewUrls[currentIndex]}
         alt="Video preview"
-        className="manifest-preview-image"
+        className="preview-image"
         onError={(e) => {
           logger.error('Preview image failed to load');
           (e.target as HTMLImageElement).classList.add('hidden');
         }}
       />
-    </div>
+    </Box>
   );
 };
 
@@ -129,106 +155,121 @@ const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, onCance
 
   const infoText = infoParts.join(' • ');
 
+  const percent = downloadProgress ? Math.round((downloadProgress.downloaded / downloadProgress.total) * 100) : 0;
+  const isCanceled = downloadProgress?.status === 'canceled';
+  const isActive = downloadProgress && downloadProgress.status !== 'complete' && !isCanceled;
+
+  let progressInfoText = 'Starting download...';
+  if (downloadProgress) {
+    if (downloadProgress.status === 'creating_zip') {
+      if (downloadProgress.zipSize) {
+        progressInfoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
+      } else if (downloadProgress.totalBytes) {
+        progressInfoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
+      } else {
+        progressInfoText = 'Creating ZIP file...';
+      }
+    } else if (downloadProgress.status === 'downloading') {
+      const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
+      const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
+        ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
+        : '            ';
+      const size = downloadProgress.downloadedBytes !== undefined
+        ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
+        : '            ';
+      progressInfoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
+    }
+  }
+
   return (
-    <div className="manifest-item" data-manifest-id={manifest.id}>
-      {manifest.previewUrls && manifest.previewUrls.length > 0 && (
-        <PreviewImage previewUrls={manifest.previewUrls} />
-      )}
-      <div className="manifest-item-content">
-        <div className="manifest-item-header">
-          <span>{displayTitle}</span>
-          <button
-            className="btn-small secondary btn-clear-manifest"
-            data-manifest-id={manifest.id}
-            onClick={() => onClear(manifest.id)}
-          >
-            ×
-          </button>
-        </div>
-        {formattedPageUrl && manifest.pageUrl && (
-          <a
-            href={manifest.pageUrl}
-            className="manifest-item-page-link"
-            title={manifest.pageUrl}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              chrome.tabs.create({ url: manifest.pageUrl });
-            }}
-          >
-            {formattedPageUrl}
-          </a>
+    <Card className="manifest-item-card" data-manifest-id={manifest.id}>
+      <Box className="manifest-item-top-section">
+        {manifest.previewUrls && manifest.previewUrls.length > 0 && (
+          <PreviewImage previewUrls={manifest.previewUrls} />
         )}
-        <div className="manifest-item-info">{infoText}</div>
-      </div>
-      <div className="manifest-item-actions">
-        {downloadProgress && downloadProgress.status !== 'complete' ? (
-          <div className="manifest-item-progress-container">
-            <div className="manifest-item-progress-wrapper">
-              <div className="manifest-item-progress-bar">
-                <div
-                  className={`manifest-item-progress-fill ${downloadProgress.status === 'canceled' ? 'canceled' : ''}`}
-                  style={{ width: `${Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%` }}
+        <Box className="manifest-item-content-box">
+          <Box className="manifest-item-header-box">
+            <Typography variant="subtitle2" className="manifest-item-title">
+              {displayTitle}
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={() => onClear(manifest.id)}
+              className="manifest-item-close-button"
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Box>
+          {formattedPageUrl && manifest.pageUrl && (
+            <Link
+              href={manifest.pageUrl}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                chrome.tabs.create({ url: manifest.pageUrl });
+              }}
+              className="manifest-item-page-link"
+              color="text.secondary"
+              title={manifest.pageUrl}
+            >
+              {formattedPageUrl}
+            </Link>
+          )}
+        </Box>
+      </Box>
+      <Typography variant="caption" color="text.secondary" className="manifest-item-info-text">
+        {infoText}
+      </Typography>
+      <Box className="manifest-item-actions-section">
+        {isActive && (
+          <Box className="manifest-item-progress-container-box">
+            <Box className="manifest-item-progress-bar-container">
+              <LinearProgress
+                variant="determinate"
+                value={percent}
+                color={isCanceled ? 'error' : 'primary'}
+                className="manifest-item-progress-bar"
+              />
+              {!isCanceled && (
+                <IconButton
+                  size="small"
+                  onClick={() => onCancel(manifest.id)}
+                  className="manifest-item-progress-cancel-button"
                 >
-                  {downloadProgress.status !== 'canceled' && (Math.round((downloadProgress.downloaded / downloadProgress.total) * 100) + '%')}
-                </div>
-                {downloadProgress.status === 'canceled' && (
-                  <div className="manifest-item-progress-canceled-text">Download Canceled</div>
-                )}
-              </div>
-              {downloadProgress.status !== 'canceled' && (
-                <div className="manifest-item-progress-info">
-                  {(() => {
-                    let infoText = 'Starting download...';
-                    if (downloadProgress.status === 'creating_zip') {
-                      if (downloadProgress.zipSize) {
-                        infoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
-                      } else if (downloadProgress.totalBytes) {
-                        infoText = `Compressing ${formatBytes(downloadProgress.totalBytes)} into zip archive...`;
-                      } else {
-                        infoText = 'Creating ZIP file...';
-                      }
-                    } else if (downloadProgress.status === 'downloading') {
-                      const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
-                      const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
-                        ? formatSpeed(downloadProgress.downloadSpeed).padEnd(12)
-                        : '            ';
-                      const size = downloadProgress.downloadedBytes !== undefined
-                        ? formatBytes(downloadProgress.downloadedBytes).padEnd(12)
-                        : '            ';
-                      infoText = `Segments: ${segments} ${speed} ${size}`.trimEnd();
-                    }
-                    return infoText;
-                  })()}
-                </div>
+                  <CancelIcon fontSize="small" />
+                </IconButton>
               )}
-            </div>
-            {downloadProgress.status !== 'canceled' && (
-              <button
-                className="button secondary btn-cancel-download"
-                onClick={() => onCancel(manifest.id)}
-                title="Cancel download"
-              >
-                ✕
-              </button>
+            </Box>
+            {!isCanceled && (
+              <Typography variant="caption" className="manifest-item-progress-info-text">
+                {progressInfoText}
+              </Typography>
             )}
-          </div>
-        ) : (
-          <button
-            className={`button ${isCompleted ? 'secondary' : 'primary'} btn-download-zip`}
-            data-manifest-id={manifest.id}
+            {isCanceled && (
+              <Typography variant="caption" className="manifest-item-progress-canceled-text">
+                Download Canceled
+              </Typography>
+            )}
+          </Box>
+        )}
+        {!isActive && (
+          <Button
+            variant={isCompleted ? 'outlined' : 'contained'}
+            size="small"
+            fullWidth
             onClick={() => onDownload(manifest.id)}
+            className="manifest-item-download-button"
           >
             {isCompleted ? 'Zip Downloaded' : 'Download ZIP'}
-          </button>
+          </Button>
         )}
-      </div>
-    </div>
+      </Box>
+    </Card>
   );
 };
 
 /**
- * Component for displaying download progress.
+ * Component for displaying download progress (legacy, kept for compatibility but not used in new UI).
  */
 const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
   if (!progress) {
@@ -240,7 +281,6 @@ const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
     return null;
   }
 
-  // At this point, TypeScript knows status can only be 'starting' | 'downloading' | 'creating_zip'
   const percent = Math.round((progress.downloaded / progress.total) * 100);
 
   let infoText = 'Starting download...';
@@ -265,20 +305,21 @@ const ProgressBar = ({ progress, onCancel }: ProgressBarProps) => {
   }
 
   return (
-    <div className="progress active">
-      <div className="progress-bar">
-        <div className="progress-fill" style={{ width: `${percent}%` }}>
-          {percent}%
-        </div>
-      </div>
-      <div className="info">{infoText}</div>
-      <button
-        className="button secondary cancel-download-btn"
-        onClick={onCancel}
-      >
-        Cancel Download
-      </button>
-    </div>
+    <Box className="manifest-item-progress-container-box">
+      <Box className="manifest-item-progress-bar-container">
+        <LinearProgress
+          variant="determinate"
+          value={percent}
+          className="manifest-item-progress-bar"
+        />
+        <IconButton size="small" onClick={onCancel} className="manifest-item-progress-cancel-button">
+          <CancelIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      <Typography variant="caption" className="manifest-item-progress-info-text">
+        {infoText}
+      </Typography>
+    </Box>
   );
 };
 
@@ -741,106 +782,128 @@ const Popup = () => {
     }
   };
 
+  const [speedDialOpen, setSpeedDialOpen] = useState(false);
+
+  const speedDialActions = [
+    ...(manifests.length > 0 ? [{
+      icon: <DeleteIcon />,
+      name: 'Clear All Manifests',
+      onClick: clearAllManifests
+    }] : []),
+    ...((downloads.size > 0 || manifests.length > 0) ? [{
+      icon: <CleaningServicesIcon />,
+      name: 'Cleanup Downloads',
+      onClick: cleanupDownloads
+    }] : []),
+    {
+      icon: <SettingsIcon />,
+      name: 'Manage Ignore List',
+      onClick: openIgnoreListSidePanel
+    }
+  ];
+
   return (
-    <div>
-      <h1>Stream Video Saver</h1>
+    <ThemeProvider theme={appTheme}>
+      <CssBaseline />
+      <Box className="popup-container">
+        <Typography variant="h6" className="popup-title">
+          Stream Video Saver
+        </Typography>
 
-      <div className={`status ${manifests.length > 0 ? 'active' : ''}`}>
-        {statusText}
-      </div>
+        <Chip
+          label={statusText}
+          color={manifests.length > 0 ? 'success' : 'default'}
+          size="small"
+          className="popup-status-chip"
+        />
 
-
-      <div id="manifestHistory" className="manifest-history">
-        {manifests.length === 0 ? (
-          <div>No manifests captured yet. Navigate to a page with video streams.</div>
-        ) : (
-          paginatedGroups.map((group) => (
-            <div key={group.domain} className="domain-group">
-              <div className="domain-group-header">
-                <span className="domain-group-title">{group.domain}</span>
-                <button
-                  className="btn-block-domain"
-                  onClick={() => blockDomain(group.domain)}
-                  title={`Block ${group.domain} and remove all manifests from this domain`}
-                  aria-label={`Block ${group.domain}`}
-                >
-                  🚫
-                </button>
-              </div>
-              <div className="domain-group-manifests">
-                {group.manifests.map((manifest) => (
-                  <ManifestItem
-                    key={manifest.id}
-                    manifest={manifest}
-                    onDownload={downloadManifest}
-                    onClear={clearManifest}
-                    downloadProgress={downloads.get(manifest.id)?.progress}
-                    onCancel={cancelDownload}
-                    isCompleted={completedDownloads.has(manifest.id)}
-                  />
-                ))}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      {domainGroups.length > ITEMS_PER_PAGE && (
-        <div className="pagination">
-          <button
-            className="button secondary pagination-btn"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1}
-          >
-            Previous
-          </button>
-          <div className="pagination-info">
-            Page {currentPage} of {totalPages}
-          </div>
-          <button
-            className="button secondary pagination-btn"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages}
-          >
-            Next
-          </button>
-        </div>
-      )}
-
-      {error && (
-        <div className="error show">
-          Error: {error}
-        </div>
-      )}
-
-      <div className="action-buttons">
-        {manifests.length > 0 && (
-          <button
-            className="button secondary"
-            onClick={clearAllManifests}
-          >
-            Clear All Manifests
-          </button>
-        )}
-
-        {(downloads.size > 0 || manifests.length > 0) && (
-          <button
-            className="button secondary"
-            onClick={cleanupDownloads}
-            title="Cancel all active downloads and clean up stored ZIP chunks"
-          >
-            Cleanup Downloads
-          </button>
-        )}
-
-        <button
-          className="button secondary"
-          onClick={openIgnoreListSidePanel}
+        <Box
+          id="manifestHistory"
+          className="manifest-history-container"
         >
-          Manage Ignore List
-        </button>
-      </div>
-    </div>
+          {manifests.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" className="empty-state-text">
+              No manifests captured yet. Navigate to a page with video streams.
+            </Typography>
+          ) : (
+            paginatedGroups.map((group) => (
+              <Card key={group.domain} className="domain-group-card">
+                <Box className="domain-group-header-box">
+                  <Typography variant="subtitle2" className="domain-group-title-text">
+                    {group.domain}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    onClick={() => blockDomain(group.domain)}
+                    title={`Block ${group.domain} and remove all manifests from this domain`}
+                    className="domain-group-block-button"
+                  >
+                    <BlockIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+                <CardContent className="domain-group-content">
+                  {group.manifests.map((manifest) => (
+                    <ManifestItem
+                      key={manifest.id}
+                      manifest={manifest}
+                      onDownload={downloadManifest}
+                      onClear={clearManifest}
+                      downloadProgress={downloads.get(manifest.id)?.progress}
+                      onCancel={cancelDownload}
+                      isCompleted={completedDownloads.has(manifest.id)}
+                    />
+                  ))}
+                </CardContent>
+              </Card>
+            ))
+          )}
+        </Box>
+
+        {domainGroups.length > ITEMS_PER_PAGE && (
+          <Box className="pagination-container">
+            <Pagination
+              count={totalPages}
+              page={currentPage}
+              onChange={(_, page) => setCurrentPage(page)}
+              size="small"
+              color="primary"
+            />
+          </Box>
+        )}
+
+        {error && (
+          <Alert severity="error" className="error-alert">
+            {error}
+          </Alert>
+        )}
+
+        {speedDialActions.length > 0 && (
+          <>
+            <Box className="speed-dial-hover-zone" />
+            <SpeedDial
+              ariaLabel="Actions"
+              className="speed-dial-container"
+              icon={<SpeedDialIcon />}
+              onClose={() => setSpeedDialOpen(false)}
+              onOpen={() => setSpeedDialOpen(true)}
+              open={speedDialOpen}
+            >
+              {speedDialActions.map((action) => (
+                <SpeedDialAction
+                  key={action.name}
+                  icon={action.icon}
+                  tooltipTitle={action.name}
+                  onClick={() => {
+                    action.onClick();
+                    setSpeedDialOpen(false);
+                  }}
+                />
+              ))}
+            </SpeedDial>
+          </>
+        )}
+      </Box>
+    </ThemeProvider>
   );
 };
 
