@@ -5,12 +5,11 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
-import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
 import IconButton from '@mui/material/IconButton';
 import Link from '@mui/material/Link';
-import CloseIcon from '@mui/icons-material/Close';
-import CancelIcon from '@mui/icons-material/Cancel';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faDownload, faXmark, faX } from '@fortawesome/free-solid-svg-icons';
 import type { ManifestItemProps } from '../types';
 import { PreviewImage } from './PreviewImage';
 import {
@@ -50,6 +49,7 @@ export const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, 
 
   let progressInfoText = 'Starting download...';
   if (downloadProgress) {
+    console.log('downloadProgress', downloadProgress);
     if (downloadProgress.status === 'creating_zip') {
       if (downloadProgress.zipSize) {
         progressInfoText = `Created ${formatBytes(downloadProgress.zipSize)} zip file`;
@@ -58,6 +58,8 @@ export const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, 
       } else {
         progressInfoText = 'Creating ZIP file...';
       }
+    } else if (downloadProgress.status === 'sending_chunks') {
+      progressInfoText = `Sending ZIP file... (${downloadProgress.downloaded}/${downloadProgress.total} chunks)`;
     } else if (downloadProgress.status === 'downloading') {
       const segments = `${downloadProgress.downloaded}/${downloadProgress.total}`.padEnd(10);
       const speed = downloadProgress.downloadSpeed && downloadProgress.downloadSpeed > 0
@@ -78,41 +80,41 @@ export const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, 
         )}
         <Box className="manifest-item-content-box">
           <Box className="manifest-item-header-box">
-            <Typography variant="subtitle2" className="manifest-item-title">
-              {displayTitle}
-            </Typography>
+            {manifest.pageUrl ? (
+              <Typography
+                variant="subtitle2"
+                component="a"
+                href={manifest.pageUrl}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  chrome.tabs.create({ url: manifest.pageUrl });
+                }}
+                className="manifest-item-title manifest-item-title-link"
+                title={manifest.pageUrl}
+                color="inherit"
+              >
+                {displayTitle}
+              </Typography>
+            ) : (
+              <Typography variant="subtitle2" className="manifest-item-title">
+                {displayTitle}
+              </Typography>
+            )}
             <IconButton
               size="small"
               onClick={() => onClear(manifest.id)}
               className="manifest-item-close-button"
             >
-              <CloseIcon fontSize="small" />
+              <FontAwesomeIcon icon={faX} size="sm" />
             </IconButton>
           </Box>
-          {formattedPageUrl && manifest.pageUrl && (
-            <Link
-              href={manifest.pageUrl}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                chrome.tabs.create({ url: manifest.pageUrl });
-              }}
-              className="manifest-item-page-link"
-              color="text.secondary"
-              title={manifest.pageUrl}
-            >
-              {formattedPageUrl}
-            </Link>
-          )}
         </Box>
       </Box>
-      <Typography variant="caption" color="text.secondary" className="manifest-item-info-text">
-        {infoText}
-      </Typography>
-      <Box className="manifest-item-actions-section">
-        {isActive && (
-          <Box className="manifest-item-progress-container-box">
-            <Box className="manifest-item-progress-bar-container">
+      <Box className="manifest-item-status-row">
+        {isActive ? (
+          <>
+            <Box className="manifest-item-progress-container">
               <LinearProgress
                 variant="determinate"
                 value={percent}
@@ -120,37 +122,40 @@ export const ManifestItem = ({ manifest, onDownload, onClear, downloadProgress, 
                 className="manifest-item-progress-bar"
               />
               {!isCanceled && (
-                <IconButton
-                  size="small"
-                  onClick={() => onCancel(manifest.id)}
-                  className="manifest-item-progress-cancel-button"
-                >
-                  <CancelIcon fontSize="small" />
-                </IconButton>
+                <Typography variant="caption" className="manifest-item-progress-info-text">
+                  {progressInfoText}
+                </Typography>
+              )}
+              {isCanceled && (
+                <Typography variant="caption" className="manifest-item-progress-canceled-text">
+                  Download Canceled
+                </Typography>
               )}
             </Box>
             {!isCanceled && (
-              <Typography variant="caption" className="manifest-item-progress-info-text">
-                {progressInfoText}
-              </Typography>
+              <IconButton
+                size="small"
+                onClick={() => onCancel(manifest.id)}
+                className="manifest-item-action-button manifest-item-cancel-button"
+              >
+                <FontAwesomeIcon icon={faXmark} size="sm" />
+              </IconButton>
             )}
-            {isCanceled && (
-              <Typography variant="caption" className="manifest-item-progress-canceled-text">
-                Download Canceled
-              </Typography>
-            )}
-          </Box>
-        )}
-        {!isActive && (
-          <Button
-            variant={isCompleted ? 'outlined' : 'contained'}
-            size="small"
-            fullWidth
-            onClick={() => onDownload(manifest.id)}
-            className="manifest-item-download-button"
-          >
-            {isCompleted ? 'Zip Downloaded' : 'Download ZIP'}
-          </Button>
+          </>
+        ) : (
+          <>
+            <Typography variant="caption" color="text.secondary" className="manifest-item-info-text">
+              {infoText}
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={() => onDownload(manifest.id)}
+              className={`manifest-item-action-button manifest-item-download-button ${isCompleted ? 'completed' : ''}`}
+              color={isCompleted ? 'default' : 'primary'}
+            >
+              <FontAwesomeIcon icon={faDownload} size="sm" />
+            </IconButton>
+          </>
         )}
       </Box>
     </Card>

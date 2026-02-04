@@ -2,6 +2,7 @@
 
 body {
   width: 350px;
+  min-height: 230px;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   margin: 0;
@@ -526,10 +527,6 @@ h1 {
   min-width: 0;
 }
 
-.manifest-item-actions-section {
-  width: 100%;
-  flex-basis: 100%;
-}
 
 .manifest-item-header-box {
   display: flex;
@@ -539,8 +536,20 @@ h1 {
 }
 
 .manifest-item-title {
-  font-weight: 600;
+  font-weight: 600 !important;
+  font-size: 13px !important;
   word-break: break-word;
+
+  &.manifest-item-title-link {
+    text-decoration: none !important;
+    cursor: pointer;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+
+    &:hover {
+      text-decoration: underline !important;
+    }
+  }
 }
 
 .manifest-item-close-button {
@@ -560,31 +569,31 @@ h1 {
   }
 }
 
-.manifest-item-info-text {
-  display: block;
-  margin-bottom: 8px;
-  width: 100%;
-}
-
-.manifest-item-progress-container-box {
-  margin-bottom: 8px;
-}
-
-.manifest-item-progress-bar-container {
+.manifest-item-status-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  width: 100%;
+}
+
+.manifest-item-info-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.manifest-item-progress-container {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .manifest-item-progress-bar {
-  flex: 1;
+  width: 100%;
   height: 8px;
   border-radius: 4px;
-}
-
-.manifest-item-progress-cancel-button {
-  padding: 4px;
 }
 
 .manifest-item-progress-info-text {
@@ -598,8 +607,39 @@ h1 {
   color: #d32f2f;
 }
 
-.manifest-item-download-button {
-  margin-top: 4px;
+.manifest-item-action-button {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-radius: 50% !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: rgb(137 165 194 / 13%) !important;
+  background-color: white !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.2s ease;
+
+  &:hover {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+    background-color: white !important;
+  }
+
+  &.manifest-item-download-button {
+    &.completed {
+      border-color: rgb(137 165 194 / 13%) !important;
+      background-color: white !important;
+    }
+  }
+
+  // Override MUI default styles
+  &.MuiIconButton-root {
+    border-width: 1px !important;
+    border-style: solid !important;
+    border-color: rgb(137 165 194 / 13%) !important;
+    background-color: white !important;
+  }
 }
 
 .preview-image-container {
@@ -653,8 +693,8 @@ h1 {
   position: absolute;
   bottom: 0;
   right: 0;
-  width: 80px;
-  height: 80px;
+  width: 40px;
+  height: 40px;
   z-index: 998;
   cursor: pointer;
   pointer-events: auto;
@@ -668,4 +708,48 @@ h1 {
 // Also slide out when hovering directly on speed dial (when it's already visible)
 .speed-dial-container:hover {
   transform: translate(0, 0);
+}
+
+// Error Boundary Styles
+.error-boundary-container {
+  width: 100%;
+  min-height: 230px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.error-boundary-alert {
+  width: 100%;
+}
+
+.error-boundary-message {
+  margin-bottom: 16px;
+}
+
+.error-boundary-details {
+  margin-top: 16px;
+  padding: 8px;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+.error-boundary-details-title {
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.error-boundary-details-error {
+  color: #d32f2f;
+}
+
+.error-boundary-details-stack {
+  margin-top: 8px;
+  font-size: 0.7rem;
+  color: rgba(0, 0, 0, 0.6);
 }

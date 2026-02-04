@@ -36,6 +36,9 @@ import type {
   ActiveDownload,
   CleanupDownloadsMessage,
   CleanupDownloadsResponse,
+  SetPausedMessage,
+  GetPausedMessage,
+  GetPausedResponse,
 } from './types';
 import { logger, initLogger } from './utils/logger';
 import { getIconType, getIconPaths } from './utils/icons';
@@ -147,6 +150,7 @@ let activeDownloads = new Map<string, ActiveDownload>();
  * Storage key for ignored domains list.
  */
 const IGNORE_LIST_STORAGE_KEY = 'ignoredDomains';
+const PAUSED_STORAGE_KEY = 'extensionPaused';
 
 /**
  * Generates a unique ID for each manifest using timestamp and random string.
@@ -636,6 +640,34 @@ async function handleRemoveFromIgnoreList(message: RemoveFromIgnoreListMessage, 
 }
 
 /**
+ * Handles the 'setPaused' action by setting the pause state.
+ * @param message - The setPaused message
+ * @param sendResponse - Function to send the response back
+ */
+async function handleSetPaused(message: SetPausedMessage, sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [PAUSED_STORAGE_KEY]: message.paused });
+    sendResponse({ success: true });
+  } catch (error) {
+    sendResponse({ error: error instanceof Error ? error.message : 'Failed to set pause state' });
+  }
+}
+
+/**
+ * Handles the 'getPaused' action by getting the current pause state.
+ * @param sendResponse - Function to send the response back
+ */
+async function handleGetPaused(sendResponse: (response: ExtensionResponse) => void): Promise<void> {
+  try {
+    const paused = await isPaused();
+    const response: GetPausedResponse = { paused };
+    sendResponse(response);
+  } catch (error) {
+    sendResponse({ error: error instanceof Error ? error.message : 'Failed to get pause state' });
+  }
+}
+
+/**
  * Handles the 'getCurrentTab' action by returning information about the current active tab.
  * @param sendResponse - Function to send the response back
  */
@@ -658,6 +690,15 @@ async function handleGetCurrentTab(sendResponse: (response: ExtensionResponse) =
 }
 
 /**
+ * Checks if the extension is paused
+ * @returns true if paused, false otherwise
+ */
+async function isPaused(): Promise<boolean> {
+  const result = await chrome.storage.local.get(PAUSED_STORAGE_KEY);
+  return result[PAUSED_STORAGE_KEY] === true;
+}
+
+/**
  * Processes m3u8 content fetched by the background script.
  * @param url - The m3u8 URL
  * @param text - The m3u8 content
@@ -668,6 +709,11 @@ async function processM3U8Content(
   text: string,
   details: WebRequestBodyDetailsWithTabId
 ): Promise<void> {
+  // Check if extension is paused
+  if (await isPaused()) {
+    logger.log('Extension is paused, skipping m3u8 processing');
+    return;
+  }
   // Extract filename for display
   let fileName: string;
   try {
@@ -1109,6 +1155,14 @@ chrome.runtime.onMessage.addListener((
       });
       return true;
 
+    case 'setPaused':
+      handleSetPaused(message as SetPausedMessage, sendResponse);
+      return true;
+
+    case 'getPaused':
+      handleGetPaused(sendResponse);
+      return true;
+
     default:
       logger.warn(` Unknown message action: ${(message as { action: unknown }).action}`);
       return false;
@@ -1478,6 +1532,10 @@ const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
  * @param details - Details about the completed request
  */
 async function handleRequestCompleted(details: WebRequestBodyDetailsWithHeaders): Promise<void> {
+  // Check if extension is paused
+  if (await isPaused()) {
+    return; // Silently skip processing when paused
+  }
   const url = details.url;
 
   // Check if it's an m3u8 file
@@ -2357,7 +2415,7 @@ async function downloadAsZip(downloadId: string, manifest: Manifest, signal: Abo
             const sendingProgress = {
               downloaded: i + 1,
               total: totalChunks,
-              status: 'creating_zip' as DownloadStatus,
+              status: 'sending_chunks' as DownloadStatus,
               downloadedBytes,
               totalBytes,
               downloadSpeed: 0,
@@ -2893,6 +2951,10 @@ async function updateBadge(progress: DownloadProgress, zipGenerated: boolean = f
       await chrome.action.setBadgeText({ text: 'ZIP', ...badgeOptions });
       await chrome.action.setBadgeBackgroundColor({ color: '#ff9800', ...badgeOptions }); // Orange for zipping
     }
+  } else if (progress.status === 'sending_chunks') {
+    // ZIP is created and being sent to content script - show success color
+    await chrome.action.setBadgeText({ text: 'ZIP', ...badgeOptions });
+    await chrome.action.setBadgeBackgroundColor({ color: '#4caf50', ...badgeOptions }); // Green for success
   } else if (progress.status === 'downloading') {
     // Show percentage on badge during segment download
     const percent = Math.round((progress.downloaded / progress.total) * 100);

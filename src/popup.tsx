@@ -8,7 +8,7 @@
  * - Communicating with background script
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ThemeProvider } from '@mui/material/styles';
 import { appTheme } from './themes';
@@ -25,9 +25,12 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import BlockIcon from '@mui/icons-material/Block';
 import SettingsIcon from '@mui/icons-material/Settings';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import Chip from '@mui/material/Chip';
 import Alert from '@mui/material/Alert';
 import Pagination from '@mui/material/Pagination';
+import Button from '@mui/material/Button';
 import type {
   ManifestSummary,
   DownloadFormat,
@@ -43,7 +46,8 @@ import type {
   AddToIgnoreListMessage,
   DownloadState,
   CleanupDownloadsMessage,
-  CleanupDownloadsResponse
+  CleanupDownloadsResponse,
+  GetPausedResponse
 } from './types';
 import { logger } from './utils/logger';
 import {
@@ -51,6 +55,7 @@ import {
   groupManifestsByDomain
 } from './utils/popup';
 import { ManifestItem } from './components/ManifestItem';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // CRITICAL: This should appear in console immediately when script loads
 logger.log('popup.tsx loaded - script is executing');
@@ -68,6 +73,7 @@ const Popup = () => {
   const [statusText, setStatusText] = useState<string>('Loading extension...');
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [mostRecentDomain, setMostRecentDomain] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
   const statusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Opens the side panel for ignore list management
@@ -322,6 +328,27 @@ const Popup = () => {
     return groupManifestsByDomain(manifests, mostRecentDomain, activeDownloadIds);
   }, [manifests, mostRecentDomain, downloads]);
 
+  // Toggle pause state
+  const togglePause = useCallback(async () => {
+    const newPausedState = !isPaused;
+    chrome.runtime.sendMessage({
+      action: 'setPaused',
+      paused: newPausedState
+    } as ExtensionMessage, (response: ExtensionResponse) => {
+      if (chrome.runtime.lastError) {
+        const errorMsg = chrome.runtime.lastError.message || 'Unknown error';
+        setError(errorMsg);
+        return;
+      }
+      if (response && 'error' in response) {
+        const errorMsg = response.error || 'Unknown error';
+        setError(errorMsg);
+        return;
+      }
+      setIsPaused(newPausedState);
+    });
+  }, [isPaused]);
+
   // Block a domain (add to ignore list and remove manifests)
   const blockDomain = useCallback((domain: string) => {
     chrome.runtime.sendMessage({
@@ -465,6 +492,16 @@ const Popup = () => {
     };
   }, [handleDownloadProgress, handleDownloadError, handleManifestCaptured, handlePreviewUpdated, handleM3U8FetchError]);
 
+  // Check pause state
+  const checkPauseState = useCallback(() => {
+    chrome.runtime.sendMessage({ action: 'getPaused' } as ExtensionMessage, (response: ExtensionResponse) => {
+      if (response && 'paused' in response) {
+        const pausedResponse = response as GetPausedResponse;
+        setIsPaused(pausedResponse.paused);
+      }
+    });
+  }, []);
+
   // Initial load and periodic updates
   useEffect(() => {
     // Verify chrome.runtime is available
@@ -473,6 +510,9 @@ const Popup = () => {
       setStatusText('ERROR: Chrome runtime not available!');
       return;
     }
+
+    // Check pause state
+    checkPauseState();
 
     // Check for ongoing downloads when popup opens
     chrome.runtime.sendMessage({ action: 'getDownloadStatus' } as ExtensionMessage, (response: ExtensionResponse) => {
@@ -503,7 +543,7 @@ const Popup = () => {
         clearInterval(statusIntervalRef.current);
       }
     };
-  }, [updateStatus]);
+  }, [updateStatus, checkPauseState]);
 
   // Group manifests by domain
   const domainGroups = groupedManifests();
@@ -535,7 +575,12 @@ const Popup = () => {
 
   const [speedDialOpen, setSpeedDialOpen] = useState(false);
 
-  const speedDialActions = [
+  const speedDialActions = useMemo(() => [
+    {
+      icon: isPaused ? <PlayArrowIcon /> : <PauseIcon />,
+      name: isPaused ? 'Enable Extension' : 'Pause Extension',
+      onClick: togglePause
+    },
     ...(manifests.length > 0 ? [{
       icon: <DeleteIcon />,
       name: 'Clear All Manifests',
@@ -551,32 +596,46 @@ const Popup = () => {
       name: 'Manage Ignore List',
       onClick: openIgnoreListSidePanel
     }
-  ];
+  ], [isPaused, manifests.length, downloads.size, togglePause, clearAllManifests, cleanupDownloads, openIgnoreListSidePanel]);
 
   return (
-    <ThemeProvider theme={appTheme}>
-      <CssBaseline />
-      <Box className="popup-container">
+    <Box className="popup-container">
         <Typography variant="h6" className="popup-title">
           Stream Video Saver
         </Typography>
 
-        <Chip
-          label={statusText}
-          color={manifests.length > 0 ? 'success' : 'default'}
-          size="small"
-          className="popup-status-chip"
-        />
-
-        <Box
-          id="manifestHistory"
-          className="manifest-history-container"
-        >
-          {manifests.length === 0 ? (
-            <Typography variant="body2" color="text.secondary" className="empty-state-text">
-              No manifests captured yet. Navigate to a page with video streams.
+        {isPaused ? (
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', gap: 2 }}>
+            <Typography variant="body1" color="text.secondary">
+              Extension is paused
             </Typography>
-          ) : (
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<PlayArrowIcon />}
+              onClick={togglePause}
+            >
+              Enable
+            </Button>
+          </Box>
+        ) : (
+          <>
+            <Chip
+              label={statusText}
+              color={manifests.length > 0 ? 'success' : 'default'}
+              size="small"
+              className="popup-status-chip"
+            />
+
+            <Box
+              id="manifestHistory"
+              className="manifest-history-container"
+            >
+              {manifests.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" className="empty-state-text">
+                  No manifests captured yet. Navigate to a page with video streams.
+                </Typography>
+              ) : (
             paginatedGroups.map((group) => (
               <Card key={group.domain} className="domain-group-card">
                 <Box className="domain-group-header-box">
@@ -610,25 +669,27 @@ const Popup = () => {
           )}
         </Box>
 
-        {domainGroups.length > ITEMS_PER_PAGE && (
-          <Box className="pagination-container">
-            <Pagination
-              count={totalPages}
-              page={currentPage}
-              onChange={(_, page) => setCurrentPage(page)}
-              size="small"
-              color="primary"
-            />
-          </Box>
+            {domainGroups.length > ITEMS_PER_PAGE && (
+              <Box className="pagination-container">
+                <Pagination
+                  count={totalPages}
+                  page={currentPage}
+                  onChange={(_, page) => setCurrentPage(page)}
+                  size="small"
+                  color="primary"
+                />
+              </Box>
+            )}
+
+            {error && (
+              <Alert severity="error" className="error-alert">
+                {error}
+              </Alert>
+            )}
+          </>
         )}
 
-        {error && (
-          <Alert severity="error" className="error-alert">
-            {error}
-          </Alert>
-        )}
-
-        {speedDialActions.length > 0 && (
+        {speedDialActions && speedDialActions.length > 0 && (
           <>
             <Box className="speed-dial-hover-zone" />
             <SpeedDial
@@ -661,7 +722,6 @@ const Popup = () => {
           </>
         )}
       </Box>
-    </ThemeProvider>
   );
 };
 
@@ -676,5 +736,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const root = createRoot(rootElement);
-  root.render(<Popup />);
+  root.render(
+    <ThemeProvider theme={appTheme}>
+      <CssBaseline />
+      <ErrorBoundary>
+        <Popup />
+      </ErrorBoundary>
+    </ThemeProvider>
+  );
 });

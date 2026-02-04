@@ -100,7 +100,7 @@ export type DownloadFormat = 'zip';
 /**
  * Download status type
  */
-export type DownloadStatus = 'starting' | 'downloading' | 'creating_zip' | 'complete' | 'canceled';
+export type DownloadStatus = 'starting' | 'downloading' | 'creating_zip' | 'sending_chunks' | 'complete' | 'canceled';
 
 /**
  * Download progress information
@@ -192,7 +192,9 @@ export type MessageAction =
   | 'createBlobUrlFromChunks'
   | 'cleanupZipChunks'
   | 'createBlobUrlFromStorage' // Legacy message, kept for compatibility
-  | 'cleanupDownloads';
+  | 'cleanupDownloads'
+  | 'setPaused'
+  | 'getPaused';
 
 /**
  * Base message interface
@@ -457,6 +459,44 @@ export interface CleanupDownloadsResponse {
 }
 
 /**
+ * Message to set pause state
+ */
+export interface SetPausedMessage extends BaseMessage {
+  action: 'setPaused';
+  paused: boolean;
+}
+
+/**
+ * Message to get pause state
+ */
+export interface GetPausedMessage extends BaseMessage {
+  action: 'getPaused';
+}
+
+/**
+ * Response for getPaused action
+ */
+export interface GetPausedResponse {
+  paused: boolean;
+}
+
+/**
+ * Error Boundary component props
+ */
+export interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+/**
+ * Error Boundary component state
+ */
+export interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+  errorInfo: React.ErrorInfo | null;
+}
+
+/**
  * Union type for all content script responses
  */
 export type ContentScriptResponse =
@@ -497,7 +537,10 @@ export type ExtensionMessage =
   | CreateBlobUrlFromChunksMessage
   | CleanupZipChunksMessage
   | CreateBlobUrlFromStorageMessage
-  | CleanupDownloadsMessage;
+  | CleanupDownloadsMessage
+  | SetPausedMessage
+  | GetPausedMessage;
+
 
 /**
  * Response for getStatus action
@@ -548,6 +591,7 @@ export type ExtensionResponse =
   | IgnoreListResponse
   | GetCurrentTabResponse
   | CleanupDownloadsResponse
+  | GetPausedResponse
   | { error: string };
 
 // Re-export popup component types

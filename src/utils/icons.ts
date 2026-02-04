@@ -53,6 +53,11 @@ export function getIconType(progress: DownloadProgress | null, zipGenerated: boo
     return 'compressing';
   }
 
+  if (progress.status === 'sending_chunks') {
+    // ZIP is created and being sent to content script
+    return 'saving';
+  }
+
   if (progress.status === 'downloading') {
     return 'downloading';
   }
