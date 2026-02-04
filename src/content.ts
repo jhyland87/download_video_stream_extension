@@ -7,11 +7,6 @@ import { logger } from './utils/logger';
 import type {
   ExtensionMessage,
   ContentScriptResponse,
-  GetVideoPreviewMessage,
-  CreateBlobUrlMessage,
-  ReceiveZipChunkMessage,
-  CreateBlobUrlFromChunksMessage,
-  CleanupZipChunksMessage,
   CreateBlobUrlFromStorageMessage
 } from './types';
 import {

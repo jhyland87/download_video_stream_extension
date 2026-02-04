@@ -7,7 +7,6 @@ import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
 import LinearProgress from '@mui/material/LinearProgress';
 import IconButton from '@mui/material/IconButton';
-import Link from '@mui/material/Link';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faDownload, faXmark, faX } from '@fortawesome/free-solid-svg-icons';
 import type { ManifestItemProps } from '../types';

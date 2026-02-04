@@ -42,7 +42,6 @@ import type {
 } from './types';
 import { logger, initLogger } from './utils/logger';
 import { getIconType, getIconPaths } from './utils/icons';
-import type { IconType } from './types';
 
 /**
  * Regular expression pattern to match m3u8 files in URLs.
