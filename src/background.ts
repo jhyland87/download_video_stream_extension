@@ -53,8 +53,8 @@ const M3U8_PATTERN = /\.m3u8(\?|$)/i;
 // Increased batch sizes for faster parallel downloads
 // BATCH_SIZE: Number of segments to download concurrently
 // Higher values = faster downloads but more memory/network usage
-const BATCH_SIZE = 30; // Increased from 10 to 30 for faster downloads
-const RETRY_BATCH_SIZE = 15; // Increased from 5 to 15 for faster retries
+const BATCH_SIZE = 50;
+const RETRY_BATCH_SIZE = Math.floor(BATCH_SIZE / 3);
 
 /**
  * Maximum number of manifests to keep in history.
@@ -67,6 +67,17 @@ const MAX_MANIFEST_HISTORY = 100;
  * We'll append the window ID to make it per-window.
  */
 const MANIFEST_HISTORY_STORAGE_KEY_PREFIX = 'manifestHistory_';
+
+/**
+ * Storage key for ignored domains list.
+ */
+const IGNORE_LIST_STORAGE_KEY = 'ignoredDomains';
+const PAUSED_STORAGE_KEY = 'extensionPaused';
+
+/**
+ * Cooldown period in milliseconds before a URL can be processed again.
+ */
+const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
 
 /**
  * Get the current window ID.
@@ -119,9 +130,7 @@ async function getTabIdFromManifest(manifestId: string): Promise<number | undefi
  */
 function getStorageKey(windowId: number | null): string {
   // Use a default key if window ID is not available
-  return windowId !== null
-    ? `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}${windowId}`
-    : `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}default`;
+  return `${MANIFEST_HISTORY_STORAGE_KEY_PREFIX}${windowId ?? 'default'}`;
 }
 
 /**
@@ -146,11 +155,6 @@ async function saveManifestHistory(manifests: Manifest[], windowId: number | nul
  */
 let activeDownloads = new Map<string, ActiveDownload>();
 
-/**
- * Storage key for ignored domains list.
- */
-const IGNORE_LIST_STORAGE_KEY = 'ignoredDomains';
-const PAUSED_STORAGE_KEY = 'extensionPaused';
 
 /**
  * Generates a unique ID for each manifest using timestamp and random string.
@@ -1521,10 +1525,6 @@ function parseInitSegments(content: string, baseUrl: string): string[] {
  */
 const recentlyProcessed = new Set<string>();
 
-/**
- * Cooldown period in milliseconds before a URL can be processed again.
- */
-const PROCESSING_COOLDOWN = 5000; // 5 seconds cooldown for same URL
 
 /**
  * Handles completed network requests and captures m3u8 files.
